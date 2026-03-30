@@ -596,3 +596,8 @@ export function markMikroTikConnected(): void {
     `UPDATE mikrotik_config SET last_connected = datetime('now') WHERE id = 'default'`
   ).run();
 }
+
+export function deleteMikroTikConfig(): void {
+  const db = getDb();
+  db.prepare("DELETE FROM mikrotik_config WHERE id = 'default'").run();
+}
