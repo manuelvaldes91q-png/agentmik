@@ -208,9 +208,20 @@ function detectAnomalies(current: MonitoringSnapshot): MonitoringAlert | null {
 
 async function runMonitoringCycle(): Promise<void> {
   try {
+    console.log("[Monitoring] Iniciando ciclo de monitoreo...");
     const snapshot = await takeSnapshot();
-    if (!snapshot) return; // No data available, skip this cycle
+    if (!snapshot) {
+      console.log("[Monitoring] No se obtuvo snapshot - verificando configuracion...");
+      const config = loadMikroTikConfig();
+      if (!config) {
+        console.log("[Monitoring] ERROR: No hay configuracion de MikroTik guardada. Ve a /settings para configurar.");
+      } else {
+        console.log(`[Monitoring] Configuracion existe (${config.ip}:${config.port}) pero no se pudo conectar. Revisa los logs de fetchRealRouterData.`);
+      }
+      return;
+    }
 
+    console.log(`[Monitoring] Snapshot guardado: CPU ${snapshot.cpuLoad}%, ${snapshot.interfaceStatus.length} interfaces, ${snapshot.anomalies.length} anomalias`);
     saveSnapshot(snapshot);
 
     // Cleanup old data periodically
@@ -221,6 +232,7 @@ async function runMonitoringCycle(): Promise<void> {
     // Check for anomalies
     const alert = detectAnomalies(snapshot);
     if (alert) {
+      console.log(`[Monitoring] ALERTA generada: [${alert.severity}] ${alert.title}`);
       // Create pending action if there's a proposed command
       if (alert.proposedCommand) {
         const action: ProposedAction = {
@@ -244,8 +256,9 @@ async function runMonitoringCycle(): Promise<void> {
         }
       }
     }
-  } catch {
-    // Monitoring cycle error - don't crash
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`[Monitoring] ERROR en ciclo: ${msg}`);
   }
 }
 
@@ -263,6 +276,35 @@ export function stopMonitoring(): void {
   if (monitoringInterval) {
     clearInterval(monitoringInterval);
     monitoringInterval = null;
+  }
+}
+
+export async function checkNow(): Promise<{ success: boolean; snapshot?: MonitoringSnapshot | null; error?: string }> {
+  try {
+    console.log("[Monitoring] Verificacion manual solicitada");
+    const snapshot = await takeSnapshot();
+    if (snapshot) {
+      saveSnapshot(snapshot);
+      const alert = detectAnomalies(snapshot);
+      if (alert) {
+        console.log(`[Monitoring] ALERTA en verificacion manual: [${alert.severity}] ${alert.title}`);
+        saveMonitoringAlert(alert);
+        if (alert.proposedCommand) {
+          savePendingAction({
+            id: alert.id, command: alert.proposedCommand,
+            explanation: `Manual: ${alert.title}. ${alert.detail}`,
+            riskLevel: alert.severity === "critical" ? "medium" : "low",
+            reversible: true, status: "pending", createdAt: new Date().toISOString(),
+          });
+        }
+      }
+      return { success: true, snapshot };
+    }
+    const config = loadMikroTikConfig();
+    if (!config) return { success: false, error: "No hay configuracion de MikroTik. Ve a /settings." };
+    return { success: false, error: `No se pudo conectar a ${config.ip}:${config.port}. Revisa la configuracion y los logs del servidor.` };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

@@ -3,8 +3,9 @@ import {
   startMonitoring,
   stopMonitoring,
   getMonitoringStatus,
+  checkNow,
 } from "@/lib/mikrotik/monitoring";
-import { getRecentSnapshots, getPendingActions, getActionLog, getMonitoringAlerts, clearMonitoringAlerts } from "@/lib/mikrotik/db";
+import { getRecentSnapshots, getPendingActions, getActionLog, getMonitoringAlerts, clearMonitoringAlerts, loadMikroTikConfig } from "@/lib/mikrotik/db";
 
 let autoStarted = false;
 
@@ -66,6 +67,28 @@ export async function POST(request: Request) {
     if (command === "clear-alerts") {
       clearMonitoringAlerts();
       return NextResponse.json({ success: true, message: "Alerts cleared" });
+    }
+
+    if (command === "check-now") {
+      const result = await checkNow();
+      return NextResponse.json(result);
+    }
+
+    if (command === "diagnose") {
+      const config = loadMikroTikConfig();
+      const status = getMonitoringStatus();
+      const alerts = getMonitoringAlerts(5);
+      return NextResponse.json({
+        success: true,
+        hasConfig: config !== null,
+        configIp: config?.ip || "no configurado",
+        monitoringActive: status.active,
+        snapshotsCount: status.snapshotsCount,
+        latestCpu: status.latestSnapshot?.cpuLoad ?? "N/A",
+        latestTemp: status.latestSnapshot?.temperature ?? "N/A",
+        recentAlerts: alerts.length,
+        alerts: alerts.slice(0, 3),
+      });
     }
 
     return NextResponse.json({ success: false, error: "Unknown command" }, { status: 400 });

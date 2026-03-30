@@ -235,6 +235,28 @@ export default function DashboardPage() {
     }
   };
 
+  const handleCheckNow = async () => {
+    try {
+      const res = await fetch("/api/monitoring", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: "check-now" }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        // Refresh alerts
+        fetch("/api/monitoring?action=alerts")
+          .then((r) => r.json())
+          .then((d) => { if (d.success) setMonitoringAlerts(d.alerts || []); })
+          .catch(() => {});
+      } else {
+        alert(`Error: ${json.error}`);
+      }
+    } catch {
+      alert("No se pudo conectar al servidor");
+    }
+  };
+
   const memoryUsed = data ? ((data.health.totalMemory - data.health.freeMemory) / data.health.totalMemory) * 100 : 0;
 
   if (!data) {
@@ -272,6 +294,12 @@ export default function DashboardPage() {
               {monitoring.active ? "Monitoreo activo (60s)" : "Monitoreo inactivo"}
             </span>
           </div>
+          <button
+            onClick={handleCheckNow}
+            className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium transition-colors"
+          >
+            Verificar Ahora
+          </button>
           <button
             onClick={handleSyncDocs}
             disabled={syncStatus.syncing}
