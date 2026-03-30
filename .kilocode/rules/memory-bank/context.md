@@ -67,3 +67,4 @@ All text is in Spanish:
 | 2026-03-30 | Cleaned all simulated data: monitoring uses real data only, log ingestion disabled when router configured, flush-cache API endpoint |
 | 2026-03-30 | Core Experto v6: recursive routing, PCC/PCQ QoS, DDoS mitigation, FastTrack, CPU profiling, MSS/MTU, RAM optimization, vector store cleanup |
 | 2026-03-30 | Monitoring alerts fixed: saved to DB, real-time detection (CPU>85%, mem>90%, temp>70C, interface flap), dashboard displays them |
+| 2026-03-30 | Agent executes real diagnostics: firewall, interfaces, cpu, memory, routes, nat, dns, dhcp, queues, logs, connectivity, security, overview |
