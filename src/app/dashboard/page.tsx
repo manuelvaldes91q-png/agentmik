@@ -8,8 +8,23 @@ import { TrafficChart } from "@/components/TrafficChart";
 import { AlertItem } from "@/components/AlertItem";
 import type { InterfaceStats, SystemHealth, BgpSession, OspfNeighbor, Alert } from "@/lib/types";
 
+interface SyncStatus {
+  syncing: boolean;
+  lastSync: string | null;
+  totalChunks: number;
+  categories: string[];
+  error: string | null;
+}
+
 export default function DashboardPage() {
   const [data, setData] = useState(() => generateSimulatedData());
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({
+    syncing: false,
+    lastSync: null,
+    totalChunks: 0,
+    categories: [],
+    error: null,
+  });
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -17,6 +32,53 @@ export default function DashboardPage() {
     }, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    fetch("/api/docs/sync")
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            lastSync: json.lastSync,
+            totalChunks: json.totalChunks,
+            categories: json.categories,
+          }));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleSyncDocs = async () => {
+    setSyncStatus((prev) => ({ ...prev, syncing: true, error: null }));
+
+    try {
+      const res = await fetch("/api/docs/sync", { method: "POST" });
+      const json = await res.json();
+
+      if (json.success) {
+        setSyncStatus({
+          syncing: false,
+          lastSync: json.lastSync,
+          totalChunks: json.chunks,
+          categories: json.categories,
+          error: null,
+        });
+      } else {
+        setSyncStatus((prev) => ({
+          ...prev,
+          syncing: false,
+          error: json.error || "Sync failed",
+        }));
+      }
+    } catch {
+      setSyncStatus((prev) => ({
+        ...prev,
+        syncing: false,
+        error: "Connection error during sync",
+      }));
+    }
+  };
 
   const memoryUsed = ((data.health.totalMemory - data.health.freeMemory) / data.health.totalMemory) * 100;
 
@@ -29,11 +91,53 @@ export default function DashboardPage() {
             {data.health.boardName} &middot; RouterOS {data.health.routerOsVersion} &middot; Uptime: {data.health.uptime}
           </p>
         </div>
-        <div className="flex items-center gap-2 text-xs">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-emerald-400">Live</span>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 text-xs">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="text-emerald-400">Live</span>
+          </div>
+          <button
+            onClick={handleSyncDocs}
+            disabled={syncStatus.syncing}
+            className="flex items-center gap-2 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg text-xs font-medium transition-colors"
+          >
+            {syncStatus.syncing ? (
+              <>
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Sincronizando...
+              </>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Sincronizar Documentacion
+              </>
+            )}
+          </button>
         </div>
       </div>
+
+      {syncStatus.error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm text-red-400">
+          {syncStatus.error}
+        </div>
+      )}
+
+      {syncStatus.totalChunks > 0 && (
+        <div className="flex items-center gap-4 text-xs text-slate-500">
+          <span>Documentacion indexada: {syncStatus.totalChunks} fragmentos</span>
+          {syncStatus.categories.length > 0 && (
+            <span>Categorias: {syncStatus.categories.join(", ")}</span>
+          )}
+          {syncStatus.lastSync && (
+            <span>Ultima sync: {new Date(syncStatus.lastSync).toLocaleString()}</span>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">

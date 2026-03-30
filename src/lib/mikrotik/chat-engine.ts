@@ -1,5 +1,6 @@
 import { searchKnowledge } from "@/docs/knowledge-base";
 import { generateConfigSuggestion } from "./analyzer";
+import { getVectorStore } from "@/lib/ingestion/vector-store";
 
 const systemPrompt = `You are MikroTik Expert Sentinel, an AI assistant specialized in MikroTik RouterOS configuration and network engineering. You hold MTCNA, MTCRE, and MTCINE certifications.
 
@@ -15,7 +16,11 @@ Key guidelines:
 export function generateChatResponse(userMessage: string): string {
   const lowerMessage = userMessage.toLowerCase();
 
-  if (lowerMessage.includes("help") || lowerMessage.includes("hello") || lowerMessage.includes("hi")) {
+  if (
+    lowerMessage.includes("help") ||
+    lowerMessage.includes("hello") ||
+    lowerMessage.includes("hi")
+  ) {
     return `I'm MikroTik Expert Sentinel, your RouterOS specialist. I can help you with:
 
 - **Firewall configuration** - Filter rules, Mangle, Raw rules
@@ -34,6 +39,37 @@ Upload an .rsc file for configuration analysis, or ask me any RouterOS question.
     return configResponse;
   }
 
+  // Search vector store first (crawled MikroTik documentation)
+  try {
+    const vectorResults = getVectorStore().search(userMessage, 3);
+    if (vectorResults.length > 0 && vectorResults[0].score > 0.05) {
+      const topResult = vectorResults[0];
+      const chunk = topResult.chunk;
+      let response = `**${chunk.section}** (${chunk.title})\n\n${chunk.text}\n\n`;
+      if (chunk.codeExamples.length > 0) {
+        for (const code of chunk.codeExamples) {
+          response += `\`\`\`routeros\n${code}\n\`\`\`\n`;
+        }
+      }
+      response += `\n_Source: [MikroTik Documentation](${chunk.url})_`;
+
+      if (vectorResults.length > 1) {
+        const related = vectorResults
+          .slice(1)
+          .filter((r) => r.score > 0.03)
+          .map((r) => `**${r.chunk.section}**`);
+        if (related.length > 0) {
+          response += "\n\nRelated: " + related.join(", ");
+        }
+      }
+
+      return response;
+    }
+  } catch {
+    // Fall through to static knowledge base
+  }
+
+  // Fall back to static knowledge base
   const relevantEntries = searchKnowledge(userMessage);
   if (relevantEntries.length > 0) {
     const entry = relevantEntries[0];
@@ -42,7 +78,12 @@ Upload an .rsc file for configuration analysis, or ask me any RouterOS question.
       response += `\`\`\`routeros\n${entry.codeExample}\n\`\`\`\n`;
     }
     if (relevantEntries.length > 1) {
-      response += "\nRelated topics: " + relevantEntries.slice(1).map((e) => `**${e.topic}**`).join(", ");
+      response +=
+        "\nRelated topics: " +
+        relevantEntries
+          .slice(1)
+          .map((e) => `**${e.topic}**`)
+          .join(", ");
     }
     return response;
   }
@@ -107,7 +148,11 @@ Key BGP tips for v7:
 Which BGP scenario are you working on (multi-homed, transit, IX peering)?`;
   }
 
-  if (lowerMessage.includes("queue") || lowerMessage.includes("bandwidth") || lowerMessage.includes("qos")) {
+  if (
+    lowerMessage.includes("queue") ||
+    lowerMessage.includes("bandwidth") ||
+    lowerMessage.includes("qos")
+  ) {
     return `**QoS with Queue Trees (RouterOS v7):**
 
 First, mark packets with mangle:

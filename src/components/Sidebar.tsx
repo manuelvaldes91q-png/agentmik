@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState, useEffect } from "react";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
@@ -12,6 +13,18 @@ const navItems = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const [kbStats, setKbStats] = useState({ totalChunks: 0, lastSync: null as string | null });
+
+  useEffect(() => {
+    fetch("/api/docs/sync")
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success) {
+          setKbStats({ totalChunks: json.totalChunks, lastSync: json.lastSync });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   return (
     <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col shrink-0">
@@ -53,10 +66,14 @@ export function Sidebar() {
 
       <div className="p-4 border-t border-slate-800">
         <div className="flex items-center gap-2 text-xs text-slate-500">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span>Knowledge Base: 19 entries</span>
+          <div className={`w-2 h-2 rounded-full ${kbStats.totalChunks > 0 ? "bg-emerald-500" : "bg-amber-500"} animate-pulse`} />
+          <span>{kbStats.totalChunks > 0 ? `Knowledge Base: ${kbStats.totalChunks} chunks` : "Knowledge Base: 19 static entries"}</span>
         </div>
-        <p className="text-xs text-slate-600 mt-1">RouterOS v7 Optimized</p>
+        <p className="text-xs text-slate-600 mt-1">
+          {kbStats.lastSync
+            ? `Synced: ${new Date(kbStats.lastSync).toLocaleDateString()}`
+            : "Use sync to crawl MikroTik docs"}
+        </p>
       </div>
     </aside>
   );

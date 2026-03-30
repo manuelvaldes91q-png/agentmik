@@ -59,7 +59,9 @@ bun typecheck      # Run TypeScript type checking
 {
   "next": "^16.1.3", // Framework
   "react": "^19.2.3", // UI library
-  "react-dom": "^19.2.3" // React DOM
+  "react-dom": "^19.2.3", // React DOM
+  "cheerio": "^1.2.0", // HTML parsing for documentation crawler
+  "better-sqlite3": "^12.8.0" // SQLite for vector database
 }
 ```
 
@@ -71,6 +73,7 @@ bun typecheck      # Run TypeScript type checking
   "@types/node": "^24.10.2",
   "@types/react": "^19.2.7",
   "@types/react-dom": "^19.2.3",
+  "@types/better-sqlite3": "^7.6.13",
   "@tailwindcss/postcss": "^4.1.17",
   "tailwindcss": "^4.1.17",
   "eslint": "^9.39.1",
