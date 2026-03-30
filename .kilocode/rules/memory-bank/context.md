@@ -62,3 +62,4 @@ All text is in Spanish:
 | 2026-03-30 | RouterOS v6/v7 compatibility: dynamic BGP commands, version detection |
 | 2026-03-30 | Added v6 knowledge base entries, chat engine v6/v7 aware, improved fetch error diagnostics |
 | 2026-03-30 | Comprehensive v6 KB: interfaces, DHCP, DNS, PPPoE, traffic monitoring, queues, firewall, VLAN, hotspot, diagnostics |
+| 2026-03-30 | Bilingual v6/v7 expert: version detection from router, RSC migration hints, legacy doc crawler, cached version for chat engine |
