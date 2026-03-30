@@ -9,6 +9,25 @@ interface DiagnosticResult {
   solution: string;
 }
 
+// Wrapper that always returns findings even on error
+async function runCmd(command: string): Promise<{ result: Record<string, string>[]; error: string | null; commands: string[] }> {
+  const res = await executeCommand(command);
+  if (res.success && res.result) {
+    console.log(`[Diagnostic] ${command}: OK (${(res.result as unknown[]).length} items)`);
+    return { result: res.result as Record<string, string>[], error: null, commands: [command] };
+  }
+  const errMsg = res.error || "Error desconocido";
+  console.log(`[Diagnostic] ${command}: FALLO - ${errMsg}`);
+  return { result: [], error: errMsg, commands: [command] };
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(0)} MB`;
+  if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
+
 // Detect what the user wants to check
 export function detectDiagnosticIntent(message: string): string | null {
   const lower = message.toLowerCase();
@@ -32,16 +51,18 @@ export function detectDiagnosticIntent(message: string): string | null {
 
 // Run diagnostic based on intent
 export async function runDiagnostic(intent: string): Promise<DiagnosticResult> {
-  const hasConfig = loadMikroTikConfig();
-  if (!hasConfig) {
+  const config = loadMikroTikConfig();
+  if (!config) {
     return {
       category: intent,
-      findings: ["No hay configuracion de MikroTik guardada"],
+      findings: ["No hay configuracion de MikroTik guardada. Ve a /settings para configurar tu router."],
       severity: "critical",
       commands: [],
-      solution: "Ve a /settings y configura la conexion a tu router MikroTik.",
+      solution: "Ve a /settings y configura la IP, puerto, usuario y contrasena de tu MikroTik.",
     };
   }
+
+  console.log(`[Diagnostic] Ejecutando diagnostico: ${intent} en ${config.ip}:${config.port}`);
 
   switch (intent) {
     case "firewall": return await diagnosticFirewall();
@@ -67,541 +88,367 @@ export async function runDiagnostic(intent: string): Promise<DiagnosticResult> {
   }
 }
 
+// ============ DIAGNOSTIC FUNCTIONS ============
+
 async function diagnosticFirewall(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  // Get firewall filter rules
-  const filterRes = await executeCommand("/ip firewall filter print");
-  if (filterRes.success && filterRes.result) {
-    const rules = filterRes.result as Record<string, string>[];
-    commands.push("/ip firewall filter print");
+  const cmd = await runCmd("/ip firewall filter print");
+  allCommands.push(...cmd.commands);
 
-    if (rules.length === 0) {
-      findings.push("No hay reglas de firewall configuradas. Tu router esta sin proteccion.");
-      return {
-        category: "Firewall",
-        findings,
-        severity: "critical",
-        commands,
-        solution: "AGREGA ESTAS REGLAS BASICAS AHORA:\n\n/ip firewall filter\nadd action=accept chain=input connection-state=established,related\nadd action=drop chain=input connection-state=invalid\nadd action=accept chain=input protocol=icmp\nadd action=accept chain=input in-interface=ether2\nadd action=drop chain=input in-interface=ether1 comment=\"Drop WAN input\"",
-      };
-    }
-
-    // Check if first rule accepts established/related
-    const firstRule = rules[0];
-    if (!firstRule["connection-state"]?.includes("established") && !firstRule["connection-state"]?.includes("related")) {
-      findings.push("La primera regla NO acepta conexiones establecidas/relacionadas. Esto causa alta CPU.");
-    } else {
-      findings.push("Primera regla correcta: acepta conexiones establecidas/relacionadas.");
-    }
-
-    // Check for drop invalid
-    const hasDropInvalid = rules.some(r => r.action === "drop" && r["connection-state"]?.includes("invalid"));
-    if (!hasDropInvalid) {
-      findings.push("No hay regla para dropear conexiones invalidas. Agregala para mejorar seguridad.");
-    }
-
-    // Count rules by chain
-    const inputRules = rules.filter(r => r.chain === "input");
-    const forwardRules = rules.filter(r => r.chain === "forward");
-    findings.push(`Reglas input: ${inputRules.length} | Reglas forward: ${forwardRules.length} | Total: ${rules.length}`);
-
-    // Check for WAN drop at the end
-    const lastInputRule = inputRules[inputRules.length - 1];
-    if (lastInputRule && lastInputRule.action !== "drop") {
-      findings.push("ADVERTENCIA: La ultima regla de input no es drop. El trafico no autorizado podria pasar.");
-    }
-
-    // Check connection tracking
-    const connRes = await executeCommand("/ip firewall connection print count-only");
-    if (connRes.success && connRes.result) {
-      const count = String(connRes.result).trim();
-      findings.push(`Conexiones activas: ${count}`);
-      if (parseInt(count) > 10000) {
-        findings.push("ALTO: Mas de 10,000 conexiones activas. Posible ataque DDoS.");
-      }
-    }
+  if (cmd.error) {
+    findings.push(`Error al consultar firewall: ${cmd.error}`);
+    return { category: "Firewall", findings, severity: "critical", commands: allCommands, solution: "Verifica la conexion al router y los permisos del usuario API." };
   }
 
-  return {
-    category: "Firewall",
-    findings,
-    severity: findings.some(f => f.includes("critica") || f.includes("critic") || f.includes("sin proteccion")) ? "critical" : findings.some(f => f.includes("ADVERTENCIA") || f.includes("ALTO")) ? "warning" : "info",
-    commands,
-    solution: "Si necesitas agregar una regla, dime exactamente que quieres bloquear o permitir y te genero el comando.",
-  };
+  const rules = cmd.result;
+  if (rules.length === 0) {
+    findings.push("No hay reglas de firewall configuradas. Tu router esta ABIERTO.");
+    return { category: "Firewall", findings, severity: "critical", commands: allCommands,
+      solution: "AGREGA ESTAS REGLAS BASICAS:\n\n/ip firewall filter\nadd action=accept chain=input connection-state=established,related\nadd action=drop chain=input connection-state=invalid\nadd action=accept chain=input protocol=icmp\nadd action=accept chain=input in-interface=ether2\nadd action=drop chain=input in-interface=ether1" };
+  }
+
+  const firstRule = rules[0];
+  const hasEstablished = firstRule["connection-state"]?.includes("established") || firstRule["connection-state"]?.includes("related");
+  findings.push(hasEstablished
+    ? "Primera regla OK: acepta conexiones establecidas/relacionadas."
+    : "PROBLEMA: La primera regla NO acepta established/related. Esto causa alta CPU.");
+
+  const hasDropInvalid = rules.some(r => r.action === "drop" && r["connection-state"]?.includes("invalid"));
+  if (!hasDropInvalid) findings.push("FALTA: No hay regla para dropear conexiones invalidas.");
+
+  const inputRules = rules.filter(r => r.chain === "input");
+  const forwardRules = rules.filter(r => r.chain === "forward");
+  findings.push(`Reglas: ${inputRules.length} input, ${forwardRules.length} forward, ${rules.length} total`);
+
+  const lastInput = inputRules[inputRules.length - 1];
+  if (lastInput && lastInput.action !== "drop") findings.push("ADVERTENCIA: La ultima regla de input no es drop.");
+
+  // Connection count
+  const connCmd = await runCmd("/ip firewall connection print count-only");
+  allCommands.push(...connCmd.commands);
+  if (!connCmd.error) {
+    const count = String(connCmd.result).trim();
+    findings.push(`Conexiones activas: ${count}`);
+  }
+
+  return { category: "Firewall", findings, severity: findings.some(f => f.includes("PROBLEMA") || f.includes("ABIERTO")) ? "critical" : findings.some(f => f.includes("ADVERTENCIA") || f.includes("FALTA")) ? "warning" : "info", commands: allCommands,
+    solution: "Si necesitas agregar una regla, dime que quieres bloquear o permitir." };
 }
 
 async function diagnosticInterfaces(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  const ifaceRes = await executeCommand("/interface print");
-  if (ifaceRes.success && ifaceRes.result) {
-    const ifaces = ifaceRes.result as Record<string, string>[];
-    commands.push("/interface print");
+  const cmd = await runCmd("/interface print");
+  allCommands.push(...cmd.commands);
 
-    for (const iface of ifaces) {
-      const name = iface.name;
-      const status = iface.running === "true" ? "UP" : "DOWN";
-      const rxBytes = parseInt(iface["rx-byte"] || "0", 10);
-      const txBytes = parseInt(iface["tx-byte"] || "0", 10);
-      const rxErors = parseInt(iface["rx-errors"] || "0", 10);
-      const txErrors = parseInt(iface["tx-errors"] || "0", 10);
-      const rxDrops = parseInt(iface["rx-drops"] || "0", 10);
-      const txDrops = parseInt(iface["tx-drops"] || "0", 10);
-
-      findings.push(`${name}: ${status} | RX: ${formatBytes(rxBytes)} | TX: ${formatBytes(txBytes)}`);
-
-      if (rxErors > 0 || txErrors > 0) {
-        findings.push(`  ERROR en ${name}: ${rxErors} errores RX, ${txErrors} errores TX. Verifica cable o SFP.`);
-      }
-      if (rxDrops > 100 || txDrops > 100) {
-        findings.push(`  DROPS en ${name}: ${rxDrops} drops RX, ${txDrops} drops TX. Posible saturacion.`);
-      }
-    }
-
-    const downIfaces = ifaces.filter(i => i.running !== "true");
-    if (downIfaces.length > 0) {
-      findings.push(`Interfaces caidas: ${downIfaces.map(i => i.name).join(", ")}`);
-    }
+  if (cmd.error) {
+    findings.push(`Error al consultar interfaces: ${cmd.error}`);
+    return { category: "Interfaces", findings, severity: "critical", commands: allCommands, solution: "Verifica la conexion al router." };
   }
 
-  return {
-    category: "Interfaces",
-    findings,
-    severity: findings.some(f => f.includes("ERROR")) ? "warning" : "info",
-    commands,
-    solution: "Si hay errores en una interfaz, verifica el cableado o el modulo SFP. Si hay drops, considera limitar el trafico con queues.",
-  };
+  for (const iface of cmd.result) {
+    const name = iface.name;
+    const status = iface.running === "true" ? "UP" : "DOWN";
+    const rxBytes = parseInt(iface["rx-byte"] || "0", 10);
+    const txBytes = parseInt(iface["tx-byte"] || "0", 10);
+    const rxE = parseInt(iface["rx-errors"] || "0", 10);
+    const txE = parseInt(iface["tx-errors"] || "0", 10);
+    const rxD = parseInt(iface["rx-drops"] || "0", 10);
+    const txD = parseInt(iface["tx-drops"] || "0", 10);
+
+    findings.push(`${name}: ${status} | RX ${formatBytes(rxBytes)} | TX ${formatBytes(txBytes)}`);
+    if (rxE > 0 || txE > 0) findings.push(`  ERRORES en ${name}: ${rxE} RX / ${txE} TX - revisa cableado`);
+    if (rxD > 100 || txD > 100) findings.push(`  DROPS en ${name}: ${rxD} RX / ${txD} TX - posible saturacion`);
+  }
+
+  const down = cmd.result.filter(i => i.running !== "true");
+  if (down.length > 0) findings.push(`Interfaces caidas: ${down.map(i => i.name).join(", ")}`);
+
+  return { category: "Interfaces", findings, severity: findings.some(f => f.includes("ERRORES")) ? "warning" : "info", commands: allCommands,
+    solution: "Si hay errores, verifica cableado/SFP. Si hay drops, limita trafico con queues." };
 }
 
 async function diagnosticCPU(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  const resRes = await executeCommand("/system resource print");
-  if (resRes.success && resRes.result) {
-    const res = (resRes.result as Record<string, string>[])[0];
-    commands.push("/system resource print");
+  const cmd = await runCmd("/system resource print");
+  allCommands.push(...cmd.commands);
 
-    const cpuLoad = parseInt(res["cpu-load"] || "0", 10);
-    findings.push(`CPU actual: ${cpuLoad}%`);
-
-    if (cpuLoad > 90) {
-      findings.push("CRITICO: CPU sobre 90%. El router podria dejar de responder.");
-    } else if (cpuLoad > 70) {
-      findings.push("ALTO: CPU sobre 70%. Revisa procesos que consumen recursos.");
-    } else {
-      findings.push("CPU en nivel normal.");
-    }
-
-    findings.push(`Uptime: ${res.uptime || "N/A"}`);
-    findings.push(`Version: ${res.version || "N/A"}`);
-    findings.push(`Arquitectura: ${res["architecture-name"] || res.architecture || "N/A"}`);
+  if (cmd.error) {
+    findings.push(`Error al obtener CPU: ${cmd.error}`);
+    return { category: "CPU", findings, severity: "critical", commands: allCommands, solution: "No se pudo conectar al router. Verifica configuracion en /settings." };
   }
 
-  return {
-    category: "CPU",
-    findings,
-    severity: findings.some(f => f.includes("CRITICO")) ? "critical" : findings.some(f => f.includes("ALTO")) ? "warning" : "info",
-    commands,
-    solution: cpuLoadFromFindings(findings),
-  };
-}
+  const res = cmd.result[0];
+  const cpuLoad = parseInt(res["cpu-load"] || "0", 10);
 
-function cpuLoadFromFindings(findings: string[]): string {
-  const cpuLine = findings.find(f => f.includes("CPU actual:"));
-  if (!cpuLine) return "No se pudo obtener CPU.";
-  const match = cpuLine.match(/(\d+)%/);
-  if (!match) return "No se pudo parsear CPU.";
-  const load = parseInt(match[1]);
-  if (load > 90) return "Ejecuta /tool profile duration=15 para ver que proceso consume CPU. Posibles causas: firewall mal configurado, BGP con full table, DDoS.";
-  if (load > 70) return "CPU elevada. Revisa: /ip firewall filter print stats, /routing bgp peer print stats, /ip firewall connection print count.";
-  return "CPU normal. No se requiere accion.";
+  findings.push(`CPU: ${cpuLoad}%`);
+  if (cpuLoad > 90) findings.push("CRITICO: CPU > 90%. El router puede dejar de responder.");
+  else if (cpuLoad > 70) findings.push("ALTO: CPU > 70%. Revisa procesos.");
+  else findings.push("CPU normal.");
+
+  findings.push(`Uptime: ${res.uptime || "N/A"}`);
+  findings.push(`RouterOS: ${res.version || "N/A"}`);
+
+  return { category: "CPU", findings, severity: cpuLoad > 90 ? "critical" : cpuLoad > 70 ? "warning" : "info", commands: allCommands,
+    solution: cpuLoad > 90 ? "Ejecuta /tool profile duration=15 para identificar proceso. Causas comunes: firewall mal ordenado, BGP full table, DDoS." : "CPU estable." };
 }
 
 async function diagnosticMemory(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  const resRes = await executeCommand("/system resource print");
-  if (resRes.success && resRes.result) {
-    const res = (resRes.result as Record<string, string>[])[0];
-    commands.push("/system resource print");
+  const cmd = await runCmd("/system resource print");
+  allCommands.push(...cmd.commands);
 
-    const freeMem = parseInt(res["free-memory"] || "0", 10);
-    const totalMem = parseInt(res["total-memory"] || "0", 10);
-    const usedPct = totalMem > 0 ? ((totalMem - freeMem) / totalMem * 100) : 0;
-
-    findings.push(`Memoria: ${formatBytes(freeMem)} libre de ${formatBytes(totalMem)} (${usedPct.toFixed(0)}% usado)`);
-
-    if (usedPct > 95) {
-      findings.push("CRITICO: Memoria casi agotada. El router podria reiniciarse.");
-    } else if (usedPct > 80) {
-      findings.push("ALTO: Memoria sobre 80%. Considera deshabilitar paquetes innecesarios.");
-    } else {
-      findings.push("Memoria en nivel normal.");
-    }
+  if (cmd.error) {
+    findings.push(`Error al obtener memoria: ${cmd.error}`);
+    return { category: "Memoria", findings, severity: "critical", commands: allCommands, solution: "Verifica conexion al router." };
   }
 
-  return {
-    category: "Memoria",
-    findings,
-    severity: findings.some(f => f.includes("CRITICO")) ? "critical" : findings.some(f => f.includes("ALTO")) ? "warning" : "info",
-    commands,
-    solution: "Si la memoria esta alta, ejecuta /system package print y deshabilita paquetes que no uses: /system package disable hotspot, mpls, ppp, wireless.",
-  };
+  const res = cmd.result[0];
+  const free = parseInt(res["free-memory"] || "0", 10);
+  const total = parseInt(res["total-memory"] || "0", 10);
+  const usedPct = total > 0 ? ((total - free) / total * 100) : 0;
+
+  findings.push(`Memoria: ${formatBytes(free)} libre de ${formatBytes(total)} (${usedPct.toFixed(0)}% usado)`);
+  if (usedPct > 95) findings.push("CRITICO: Memoria casi agotada.");
+  else if (usedPct > 80) findings.push("ALTO: Memoria > 80%.");
+  else findings.push("Memoria OK.");
+
+  return { category: "Memoria", findings, severity: usedPct > 95 ? "critical" : usedPct > 80 ? "warning" : "info", commands: allCommands,
+    solution: usedPct > 80 ? "Deshabilita paquetes innecesarios: /system package disable hotspot,mls,ppp,wireless" : "Memoria estable." };
 }
 
 async function diagnosticRoutes(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  const routeRes = await executeCommand("/ip route print");
-  if (routeRes.success && routeRes.result) {
-    const routes = routeRes.result as Record<string, string>[];
-    commands.push("/ip route print");
+  const cmd = await runCmd("/ip route print");
+  allCommands.push(...cmd.commands);
 
-    const defaultRoutes = routes.filter(r => r["dst-address"] === "0.0.0.0/0");
-    findings.push(`Rutas totales: ${routes.length} | Rutas default: ${defaultRoutes.length}`);
-
-    for (const dr of defaultRoutes) {
-      const status = dr["active"] === "true" ? "ACTIVA" : "inactiva";
-      findings.push(`Default route via ${dr.gateway} (${status}) - ${dr["routing-mark"] || "main"}`);
-    }
-
-    if (defaultRoutes.length === 0) {
-      findings.push("CRITICO: No hay ruta por defecto. Sin acceso a internet.");
-    }
-
-    const unreachable = routes.filter(r => r["unreachable"] === "true");
-    if (unreachable.length > 0) {
-      findings.push(`${unreachable.length} rutas inalcanzables. Posible problema de gateway.`);
-    }
+  if (cmd.error) {
+    findings.push(`Error al obtener rutas: ${cmd.error}`);
+    return { category: "Rutas", findings, severity: "critical", commands: allCommands, solution: "Verifica conexion al router." };
   }
 
-  return {
-    category: "Rutas",
-    findings,
-    severity: findings.some(f => f.includes("CRITICO")) ? "critical" : "info",
-    commands,
-    solution: "Si no hay ruta default, agrega: /ip route add dst-address=0.0.0.0/0 gateway=IP_DE_TU_GATEWAY",
-  };
+  const routes = cmd.result;
+  const defaults = routes.filter(r => r["dst-address"] === "0.0.0.0/0");
+  findings.push(`Rutas: ${routes.length} total, ${defaults.length} default`);
+
+  for (const dr of defaults) {
+    const active = dr["active"] === "true" ? "ACTIVA" : "inactiva";
+    findings.push(`Default via ${dr.gateway} (${active})`);
+  }
+
+  if (defaults.length === 0) findings.push("CRITICO: Sin ruta default. No hay internet.");
+
+  return { category: "Rutas", findings, severity: defaults.length === 0 ? "critical" : "info", commands: allCommands,
+    solution: defaults.length === 0 ? "Agrega: /ip route add dst-address=0.0.0.0/0 gateway=IP_GATEWAY" : "Rutas OK." };
 }
 
 async function diagnosticNAT(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  const natRes = await executeCommand("/ip firewall nat print");
-  if (natRes.success && natRes.result) {
-    const rules = natRes.result as Record<string, string>[];
-    commands.push("/ip firewall nat print");
+  const cmd = await runCmd("/ip firewall nat print");
+  allCommands.push(...cmd.commands);
 
-    findings.push(`Reglas NAT: ${rules.length}`);
-
-    const masq = rules.filter(r => r.action === "masquerade");
-    const srcNat = rules.filter(r => r.action === "src-nat");
-    const dstNat = rules.filter(r => r.action === "dst-nat");
-
-    findings.push(`Masquerade: ${masq.length} | Src-NAT: ${srcNat.length} | Dst-NAT (port forward): ${dstNat.length}`);
-
-    if (masq.length === 0 && srcNat.length === 0) {
-      findings.push("CRITICO: No hay NAT configurado. Los clientes LAN no tendran acceso a internet.");
-    }
-
-    if (dstNat.length > 0) {
-      for (const rule of dstNat) {
-        findings.push(`Port forward: ${rule["to-ports"] || rule["to-addresses"]} en ${rule["dst-port"]} -> ${rule["to-addresses"]}`);
-      }
-    }
+  if (cmd.error) {
+    findings.push(`Error al obtener NAT: ${cmd.error}`);
+    return { category: "NAT", findings, severity: "critical", commands: allCommands, solution: "Verifica conexion." };
   }
 
-  return {
-    category: "NAT",
-    findings,
-    severity: findings.some(f => f.includes("CRITICO")) ? "critical" : "info",
-    commands,
-    solution: "Si no hay NAT, agrega: /ip firewall nat add action=masquerade chain=srcnat out-interface=ether1",
-  };
+  const rules = cmd.result;
+  const masq = rules.filter(r => r.action === "masquerade");
+  const dstNat = rules.filter(r => r.action === "dst-nat");
+  findings.push(`NAT: ${masq.length} masquerade, ${dstNat.length} port forwards, ${rules.length} total`);
+
+  if (masq.length === 0 && rules.filter(r => r.action === "src-nat").length === 0) {
+    findings.push("CRITICO: Sin NAT. Los clientes no tendran internet.");
+  }
+
+  return { category: "NAT", findings, severity: findings.some(f => f.includes("CRITICO")) ? "critical" : "info", commands: allCommands,
+    solution: "Si falta NAT: /ip firewall nat add action=masquerade chain=srcnat out-interface=ether1" };
 }
 
 async function diagnosticDNS(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  const dnsRes = await executeCommand("/ip dns print");
-  if (dnsRes.success && dnsRes.result) {
-    const dns = (dnsRes.result as Record<string, string>[])[0];
-    commands.push("/ip dns print");
+  const cmd = await runCmd("/ip dns print");
+  allCommands.push(...cmd.commands);
 
-    findings.push(`Servidores DNS: ${dns.servers || "No configurados"}`);
-    findings.push(`Cache DNS: ${dns["cache-size"] || "N/A"}`);
-    findings.push(`Requests remotos: ${dns["allow-remote-requests"] || "no"}`);
+  if (cmd.error) {
+    findings.push(`Error al obtener DNS: ${cmd.error}`);
+    return { category: "DNS", findings, severity: "critical", commands: allCommands, solution: "Verifica conexion." };
   }
 
-  // Test DNS resolution
-  const pingRes = await executeCommand("/ping 8.8.8.8 count=1");
-  if (pingRes.success) {
-    findings.push("Conectividad a internet: OK");
-  } else {
-    findings.push("CRITICO: Sin conectividad a internet.");
-  }
+  const dns = cmd.result[0];
+  findings.push(`DNS servers: ${dns?.servers || "No configurados"}`);
 
-  return {
-    category: "DNS",
-    findings,
-    severity: findings.some(f => f.includes("CRITICO")) ? "critical" : "info",
-    commands,
-    solution: "Si DNS no responde, configura: /ip dns set servers=8.8.8.8,8.8.4.4 allow-remote-requests=yes",
-  };
+  return { category: "DNS", findings, severity: "info", commands: allCommands,
+    solution: "Si no hay DNS: /ip dns set servers=8.8.8.8,8.8.4.4 allow-remote-requests=yes" };
 }
 
 async function diagnosticDHCP(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  const dhcpRes = await executeCommand("/ip dhcp-server print");
-  if (dhcpRes.success && dhcpRes.result) {
-    const servers = dhcpRes.result as Record<string, string>[];
-    commands.push("/ip dhcp-server print");
-    findings.push(`DHCP Servers: ${servers.length}`);
-    for (const s of servers) {
-      findings.push(`  ${s.name}: interface ${s.interface}, pool ${s["address-pool"]}, ${s.disabled === "true" ? "DESHABILITADO" : "activo"}`);
-    }
+  const cmd = await runCmd("/ip dhcp-server print");
+  allCommands.push(...cmd.commands);
+
+  if (cmd.error) {
+    findings.push(`Error al obtener DHCP: ${cmd.error}`);
+    return { category: "DHCP", findings, severity: "critical", commands: allCommands, solution: "Verifica conexion." };
   }
 
-  const leaseRes = await executeCommand("/ip dhcp-server lease print count-only");
-  if (leaseRes.success) {
-    findings.push(`Leases activos: ${String(leaseRes.result).trim()}`);
+  findings.push(`DHCP servers: ${cmd.result.length}`);
+  for (const s of cmd.result) {
+    findings.push(`  ${s.name}: ${s.interface} - ${s.disabled === "true" ? "OFF" : "ON"}`);
   }
 
-  const clientRes = await executeCommand("/ip dhcp-client print");
-  if (clientRes.success && clientRes.result) {
-    const clients = clientRes.result as Record<string, string>[];
-    commands.push("/ip dhcp-client print");
-    for (const c of clients) {
-      findings.push(`DHCP Client en ${c.interface}: IP ${c.address || "ninguna"}, status ${c.status || "N/A"}`);
-    }
-  }
-
-  return {
-    category: "DHCP",
-    findings,
-    severity: "info",
-    commands,
-    solution: "Si no hay DHCP server, ejecuta: /ip dhcp-server setup para configurarlo.",
-  };
+  return { category: "DHCP", findings, severity: "info", commands: allCommands, solution: "Si falta DHCP: /ip dhcp-server setup" };
 }
 
 async function diagnosticQueues(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  const queueRes = await executeCommand("/queue simple print");
-  if (queueRes.success && queueRes.result) {
-    const queues = queueRes.result as Record<string, string>[];
-    commands.push("/queue simple print");
-    findings.push(`Simple Queues: ${queues.length}`);
-    for (const q of queues.slice(0, 5)) {
-      findings.push(`  ${q.name}: ${q["max-limit"] || "sin limite"} -> ${q.target || "N/A"}`);
-    }
-    if (queues.length > 5) findings.push(`  ... y ${queues.length - 5} mas`);
+  const cmd = await runCmd("/queue simple print");
+  allCommands.push(...cmd.commands);
+
+  if (cmd.error) {
+    findings.push(`Error al obtener queues: ${cmd.error}`);
+    return { category: "Queues", findings, severity: "critical", commands: allCommands, solution: "Verifica conexion." };
   }
 
-  return {
-    category: "Queues",
-    findings,
-    severity: "info",
-    commands,
-    solution: "Para limitar ancho de banda: /queue simple add max-limit=10M/10M name=limite target=192.168.1.0/24",
-  };
+  findings.push(`Simple queues: ${cmd.result.length}`);
+  for (const q of cmd.result.slice(0, 5)) {
+    findings.push(`  ${q.name}: ${q["max-limit"] || "sin limite"}`);
+  }
+
+  return { category: "Queues", findings, severity: "info", commands: allCommands, solution: "Para limitar: /queue simple add max-limit=10M/10M name=limite target=192.168.1.0/24" };
 }
 
 async function diagnosticLogs(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  const logRes = await executeCommand("/log print last=20");
-  if (logRes.success && logRes.result) {
-    const logs = logRes.result as Record<string, string>[];
-    commands.push("/log print last=20");
+  const cmd = await runCmd("/log print last=15");
+  allCommands.push(...cmd.commands);
 
-    const errors = logs.filter(l => l.topics?.includes("error") || l.topics?.includes("critical"));
-    const warnings = logs.filter(l => l.topics?.includes("warning"));
-
-    findings.push(`Ultimos ${logs.length} logs: ${errors.length} errores, ${warnings.length} advertencias`);
-
-    for (const log of logs.slice(0, 10)) {
-      findings.push(`[${log.time || ""}] ${log.message || ""}`);
-    }
+  if (cmd.error) {
+    findings.push(`Error al obtener logs: ${cmd.error}`);
+    return { category: "Logs", findings, severity: "critical", commands: allCommands, solution: "Verifica conexion." };
   }
 
-  return {
-    category: "Logs",
-    findings,
-    severity: findings.some(f => f.includes("error") || f.includes("critical")) ? "warning" : "info",
-    commands,
-    solution: "Revisa los logs para identificar problemas recurrentes. Usa /log print topics=error para filtrar errores.",
-  };
+  const logs = cmd.result;
+  const errors = logs.filter(l => l.topics?.includes("error") || l.topics?.includes("critical"));
+  findings.push(`Logs: ${logs.length} recientes, ${errors.length} errores`);
+
+  for (const log of logs.slice(0, 10)) {
+    findings.push(`[${log.time || ""}] ${log.message || ""}`);
+  }
+
+  return { category: "Logs", findings, severity: errors.length > 0 ? "warning" : "info", commands: allCommands,
+    solution: errors.length > 0 ? "Revisa los errores mostrados arriba." : "Logs limpios." };
 }
 
 async function diagnosticConnectivity(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  // Ping gateway
-  const routeRes = await executeCommand("/ip route print where dst-address=0.0.0.0/0");
-  if (routeRes.success && routeRes.result) {
-    const routes = routeRes.result as Record<string, string>[];
-    for (const r of routes) {
-      if (r.gateway) {
-        const pingRes = await executeCommand(`/ping ${r.gateway} count=3`);
-        findings.push(`Ping a gateway ${r.gateway}: ${pingRes.success ? "OK" : "FALLO"}`);
-        commands.push(`/ping ${r.gateway} count=3`);
-      }
-    }
-  }
+  const pingCmd = await runCmd("/ping 8.8.8.8 count=3");
+  allCommands.push(...pingCmd.commands);
+  findings.push(pingCmd.error ? "SIN INTERNET: No se puede alcanzar 8.8.8.8" : "Internet OK: 8.8.8.8 alcanzable");
 
-  // Ping internet
-  const inetRes = await executeCommand("/ping 8.8.8.8 count=3");
-  findings.push(`Ping a 8.8.8.8: ${inetRes.success ? "OK" : "FALLO - Sin internet"}`);
-  commands.push("/ping 8.8.8.8 count=3");
-
-  return {
-    category: "Conectividad",
-    findings,
-    severity: findings.some(f => f.includes("FALLO")) ? "critical" : "info",
-    commands,
-    solution: "Si no hay conectividad, verifica: 1) Ruta default, 2) NAT masquerade, 3) Firewall input/forward.",
-  };
+  return { category: "Conectividad", findings, severity: pingCmd.error ? "critical" : "info", commands: allCommands,
+    solution: pingCmd.error ? "Verifica: 1) Ruta default  2) NAT masquerade  3) Firewall" : "Conectividad OK." };
 }
 
 async function diagnosticSecurity(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  // Check services
-  const svcRes = await executeCommand("/ip service print");
-  if (svcRes.success && svcRes.result) {
-    const svcs = svcRes.result as Record<string, string>[];
-    commands.push("/ip service print");
+  const svcCmd = await runCmd("/ip service print");
+  allCommands.push(...svcCmd.commands);
 
-    for (const svc of svcs) {
+  if (!svcCmd.error) {
+    for (const svc of svcCmd.result) {
       if (svc.disabled !== "true") {
-        const restricted = svc.address ? ` (${svc.address})` : " ABIERTO A TODOS";
-        findings.push(`Servicio ${svc.name} puerto ${svc.port}: activo${restricted}`);
+        const addr = svc.address ? ` (${svc.address})` : " ABIERTO";
+        findings.push(`${svc.name} puerto ${svc.port}: activo${addr}`);
       }
     }
-
-    const telnet = svcs.find(s => s.name === "telnet" && s.disabled !== "true");
-    if (telnet) {
-      findings.push("PELIGRO: Telnet habilitado. Deshabilitalo: /ip service disable telnet");
-    }
-
-    const ftp = svcs.find(s => s.name === "ftp" && s.disabled !== "true");
-    if (ftp) {
-      findings.push("ADVERTENCIA: FTP habilitado. Usa SFTP: /ip service disable ftp");
-    }
+    if (svcCmd.result.some(s => s.name === "telnet" && s.disabled !== "true"))
+      findings.push("PELIGRO: Telnet activo. Deshabilitalo: /ip service disable telnet");
   }
 
-  // Check users
-  const userRes = await executeCommand("/user print");
-  if (userRes.success && userRes.result) {
-    const users = userRes.result as Record<string, string>[];
-    commands.push("/user print");
-    findings.push(`Usuarios: ${users.length}`);
-    const admin = users.find(u => u.name === "admin");
-    if (admin) {
-      findings.push("ADVERTENCIA: Usuario 'admin' existe. Crea un usuario personal y deshabilita admin.");
-    }
+  const userCmd = await runCmd("/user print");
+  allCommands.push(...userCmd.commands);
+  if (!userCmd.error) {
+    findings.push(`Usuarios: ${userCmd.result.length}`);
+    if (userCmd.result.some(u => u.name === "admin"))
+      findings.push("ADVERTENCIA: Usuario admin existe. Cambia nombre o crea uno nuevo.");
   }
 
-  // Connection count
-  const connRes = await executeCommand("/ip firewall connection print count-only");
-  if (connRes.success) {
-    const count = String(connRes.result).trim();
-    findings.push(`Conexiones activas: ${count}`);
-    if (parseInt(count) > 5000) {
-      findings.push("ALTO: Muchas conexiones. Posible ataque DDoS.");
-    }
-  }
-
-  return {
-    category: "Seguridad",
-    findings,
-    severity: findings.some(f => f.includes("PELIGRO")) ? "critical" : findings.some(f => f.includes("ADVERTENCIA") || f.includes("ALTO")) ? "warning" : "info",
-    commands,
-    solution: "Deshabilita servicios innecesarios, crea usuarios personalizados, y restringe acceso API por IP.",
-  };
+  return { category: "Seguridad", findings, severity: findings.some(f => f.includes("PELIGRO")) ? "critical" : findings.some(f => f.includes("ADVERTENCIA")) ? "warning" : "info", commands: allCommands,
+    solution: "Deshabilita servicios innecesarios y crea usuarios personalizados." };
 }
 
 async function diagnosticOverview(): Promise<DiagnosticResult> {
   const findings: string[] = [];
-  const commands: string[] = [];
+  const allCommands: string[] = [];
 
-  // System info
-  const resRes = await executeCommand("/system resource print");
-  if (resRes.success && resRes.result) {
-    const res = (resRes.result as Record<string, string>[])[0];
-    commands.push("/system resource print");
-    findings.push(`RouterOS: ${res.version} | CPU: ${res["cpu-load"]}% | RAM: ${formatBytes(parseInt(res["free-memory"]))} libre / ${formatBytes(parseInt(res["total-memory"]))} | Uptime: ${res.uptime}`);
+  // System
+  const resCmd = await runCmd("/system resource print");
+  allCommands.push(...resCmd.commands);
+  if (resCmd.error) {
+    findings.push(`ERROR: No se pudo conectar al router: ${resCmd.error}`);
+    return { category: "Estado General", findings, severity: "critical", commands: allCommands, solution: "Verifica la configuracion en /settings y los permisos del usuario." };
   }
+
+  const res = resCmd.result[0];
+  findings.push(`RouterOS: ${res.version} | CPU: ${res["cpu-load"]}% | RAM: ${formatBytes(parseInt(res["free-memory"]))}/${formatBytes(parseInt(res["total-memory"]))} | Uptime: ${res.uptime}`);
 
   // Identity
-  const idRes = await executeCommand("/system identity print");
-  if (idRes.success && idRes.result) {
-    const id = (idRes.result as Record<string, string>[])[0];
-    findings.push(`Nombre: ${id.name}`);
-  }
+  const idCmd = await runCmd("/system identity print");
+  allCommands.push(...idCmd.commands);
+  if (!idCmd.error) findings.push(`Nombre: ${idCmd.result[0]?.name || "MikroTik"}`);
 
   // Interfaces
-  const ifaceRes = await executeCommand("/interface print where running=true");
-  if (ifaceRes.success && ifaceRes.result) {
-    const ifaces = ifaceRes.result as Record<string, string>[];
-    findings.push(`Interfaces activas: ${ifaces.length}`);
-    for (const iface of ifaces) {
-      findings.push(`  ${iface.name}: RX ${formatBytes(parseInt(iface["rx-byte"]))} TX ${formatBytes(parseInt(iface["tx-byte"]))}`);
+  const ifCmd = await runCmd("/interface print");
+  allCommands.push(...ifCmd.commands);
+  if (!ifCmd.error) {
+    const up = ifCmd.result.filter(i => i.running === "true");
+    findings.push(`Interfaces: ${up.length}/${ifCmd.result.length} activas`);
+    for (const i of up) {
+      findings.push(`  ${i.name}: RX ${formatBytes(parseInt(i["rx-byte"]))} TX ${formatBytes(parseInt(i["tx-byte"]))}`);
     }
   }
 
-  // Firewall rules count
-  const fwRes = await executeCommand("/ip firewall filter print count-only");
-  if (fwRes.success) {
-    findings.push(`Reglas firewall: ${String(fwRes.result).trim()}`);
-  }
+  // Firewall
+  const fwCmd = await runCmd("/ip firewall filter print count-only");
+  allCommands.push(...fwCmd.commands);
+  if (!fwCmd.error) findings.push(`Reglas firewall: ${String(fwCmd.result).trim()}`);
 
-  // NAT rules count
-  const natRes = await executeCommand("/ip firewall nat print count-only");
-  if (natRes.success) {
-    findings.push(`Reglas NAT: ${String(natRes.result).trim()}`);
-  }
+  // NAT
+  const natCmd = await runCmd("/ip firewall nat print count-only");
+  allCommands.push(...natCmd.commands);
+  if (!natCmd.error) findings.push(`Reglas NAT: ${String(natCmd.result).trim()}`);
 
   // Default route
-  const routeRes = await executeCommand("/ip route print where dst-address=0.0.0.0/0 active=yes");
-  if (routeRes.success && routeRes.result) {
-    const routes = routeRes.result as Record<string, string>[];
-    if (routes.length > 0) {
-      findings.push(`Gateway activo: ${routes[0].gateway}`);
-    } else {
-      findings.push("SIN RUTA DEFAULT ACTIVA");
-    }
+  const rtCmd = await runCmd("/ip route print where dst-address=0.0.0.0/0 active=yes");
+  allCommands.push(...rtCmd.commands);
+  if (!rtCmd.error) {
+    const activeRt = rtCmd.result;
+    findings.push(activeRt.length > 0 ? `Gateway: ${activeRt[0].gateway}` : "SIN GATEWAY ACTIVO");
   }
 
-  return {
-    category: "Estado General",
-    findings,
-    severity: "info",
-    commands,
-    solution: "Si algo no se ve bien, dime que quieres verificar en detalle.",
-  };
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
-  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(0)} MB`;
-  if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(0)} KB`;
-  return `${bytes} B`;
+  return { category: "Estado General", findings, severity: "info", commands: allCommands, solution: "Si algo no se ve bien, dime que quieres verificar en detalle." };
 }
