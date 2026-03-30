@@ -2,73 +2,65 @@ import type { MikroTikConfig } from "@/lib/types";
 import { RouterOSAPI } from "node-routeros";
 import { loadMikroTikConfig, markMikroTikConnected } from "./db";
 
+type RouterOSVersion = 6 | 7;
+
+function detectVersion(versionStr: string): RouterOSVersion {
+  return versionStr.startsWith("6") ? 6 : 7;
+}
+
+function createConnection(config: MikroTikConfig): RouterOSAPI {
+  return new RouterOSAPI({
+    host: config.ip,
+    port: config.port,
+    user: config.username,
+    password: config.password,
+    timeout: 15,
+    tls: config.useSsl ? {} : undefined,
+  });
+}
+
+function parseError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+
+  if (msg.includes("ECONNREFUSED") || msg.includes("connect")) {
+    return `Conexion rechazada. Verifica que el servicio API este habilitado: /ip service enable api`;
+  }
+  if (msg.includes("ETIMEDOUT") || msg.includes("timeout")) {
+    return `Timeout de conexion. Verifica que la IP sea alcanzable y el puerto este abierto en el firewall.`;
+  }
+  if (msg.includes("login") || msg.includes("auth") || msg.includes("password") || msg.includes("invalid")) {
+    return `Autenticacion fallida. Verifica usuario y contrasena: /user group set read policy=api,read,test`;
+  }
+  if (msg.includes("CERT") || msg.includes("certificate") || msg.includes("SSL")) {
+    return `Error SSL/TLS. Verifica el certificado o deshabilita SSL.`;
+  }
+  return `Error de conexion: ${msg}`;
+}
+
 export async function testConnection(
   config: MikroTikConfig
 ): Promise<{ success: boolean; error?: string; identity?: string; version?: string; board?: string }> {
   let conn: RouterOSAPI | null = null;
 
   try {
-    conn = new RouterOSAPI({
-      host: config.ip,
-      port: config.port,
-      user: config.username,
-      password: config.password,
-      timeout: 15,
-      tls: config.useSsl ? {} : undefined,
-    });
-
+    conn = createConnection(config);
     await conn.connect();
 
-    // Get identity
     const identityRes = await conn.write("/system/identity/print");
     const identity = identityRes?.[0]?.name || "MikroTik";
 
-    // Get system resource
     const resourceRes = await conn.write("/system/resource/print");
     const version = resourceRes?.[0]?.version || "unknown";
     const board = resourceRes?.[0]?.["board-name"] || "unknown";
 
     await conn.close();
-
     return { success: true, identity, version, board };
   } catch (err) {
-    if (conn) {
-      try { conn.close(); } catch { /* */ }
-    }
-
-    const msg = err instanceof Error ? err.message : String(err);
-
-    // Provide helpful error messages
-    if (msg.includes("ECONNREFUSED") || msg.includes("connect")) {
-      return {
-        success: false,
-        error: `Conexion rechazada por ${config.ip}:${config.port}. Verifica que el servicio API este habilitado: /ip service enable api`,
-      };
-    }
-    if (msg.includes("ETIMEDOUT") || msg.includes("timeout")) {
-      return {
-        success: false,
-        error: `Timeout conectando a ${config.ip}:${config.port}. Verifica que la IP sea alcanzable y el puerto ${config.port} este abierto en el firewall.`,
-      };
-    }
-    if (msg.includes("login") || msg.includes("auth") || msg.includes("password") || msg.includes("invalid")) {
-      return {
-        success: false,
-        error: `Autenticacion fallida. Verifica usuario y contrasena. El usuario debe tener permisos de API: /user group set read policy=api,read,test`,
-      };
-    }
-    if (msg.includes("CERT") || msg.includes("certificate") || msg.includes("SSL")) {
-      return {
-        success: false,
-        error: `Error SSL/TLS. Si usas API-SSL, verifica que el certificado sea valido o deshabilita SSL.`,
-      };
-    }
-
-    return { success: false, error: `Error de conexion: ${msg}` };
+    if (conn) { try { conn.close(); } catch { /* */ } }
+    return { success: false, error: parseError(err) };
   }
 }
 
-// Execute a command on the real router
 export async function executeCommand(
   command: string
 ): Promise<{ success: boolean; result?: unknown[]; error?: string }> {
@@ -80,31 +72,18 @@ export async function executeCommand(
   let conn: RouterOSAPI | null = null;
 
   try {
-    conn = new RouterOSAPI({
-      host: config.ip,
-      port: config.port,
-      user: config.username,
-      password: config.password,
-      timeout: 15,
-      tls: config.useSsl ? {} : undefined,
-    });
-
+    conn = createConnection(config);
     await conn.connect();
     const result = await conn.write(command);
     await conn.close();
-
     markMikroTikConnected();
     return { success: true, result };
   } catch (err) {
-    if (conn) {
-      try { conn.close(); } catch { /* */ }
-    }
-    const msg = err instanceof Error ? err.message : String(err);
-    return { success: false, error: msg };
+    if (conn) { try { conn.close(); } catch { /* */ } }
+    return { success: false, error: parseError(err) };
   }
 }
 
-// Fetch real router data
 export async function fetchRealRouterData(): Promise<{
   interfaces: unknown[];
   health: unknown;
@@ -117,26 +96,20 @@ export async function fetchRealRouterData(): Promise<{
   let conn: RouterOSAPI | null = null;
 
   try {
-    conn = new RouterOSAPI({
-      host: config.ip,
-      port: config.port,
-      user: config.username,
-      password: config.password,
-      timeout: 15,
-      tls: config.useSsl ? {} : undefined,
-    });
-
+    conn = createConnection(config);
     await conn.connect();
 
     // Fetch resources
     const resources = await conn.write("/system/resource/print");
     const res = resources[0] || {};
+    const versionStr: string = res.version || "7.0";
+    const routerVersion = detectVersion(versionStr);
 
     // Fetch identity
     const identity = await conn.write("/system/identity/print");
     const boardName = identity?.[0]?.name || "MikroTik";
 
-    // Fetch interfaces
+    // Fetch interfaces - works the same on v6 and v7
     const ifaceData = await conn.write("/interface/print");
     const interfaces = (ifaceData || []).map((i: Record<string, string>) => ({
       name: i.name,
@@ -157,25 +130,39 @@ export async function fetchRealRouterData(): Promise<{
       temperature: parseInt(res.temperature || "0", 10),
       voltage: parseFloat(res.voltage || "0"),
       boardName,
-      routerOsVersion: res.version || "unknown",
-      architecture: res["architecture-name"] || "unknown",
+      routerOsVersion: versionStr,
+      architecture: res["architecture-name"] || res.architecture || "unknown",
     };
 
-    // BGP sessions
+    // BGP sessions - v6 vs v7 differ
     let bgpSessions: unknown[] = [];
     try {
-      const bgpData = await conn.write("/routing/bgp/session/print");
-      bgpSessions = (bgpData || []).map((s: Record<string, string>) => ({
-        name: s.name || s["remote-address"] || "unknown",
-        remoteAddress: s["remote-address"] || "",
-        status: (s.state || "idle").toLowerCase(),
-        prefixCount: parseInt(s["prefix-count"] || "0", 10),
-        uptime: s.uptime || "0s",
-        remoteAs: parseInt(s["remote-as"] || "0", 10),
-      }));
+      if (routerVersion === 6) {
+        // RouterOS v6: /routing bgp peer print
+        const bgpData = await conn.write("/routing/bgp/peer/print");
+        bgpSessions = (bgpData || []).map((s: Record<string, string>) => ({
+          name: s.name || s["remote-address"] || "unknown",
+          remoteAddress: s["remote-address"] || "",
+          status: (s.state || s.status || "idle").toLowerCase(),
+          prefixCount: parseInt(s["prefix-count"] || "0", 10),
+          uptime: s.uptime || "0s",
+          remoteAs: parseInt(s["remote-as"] || "0", 10),
+        }));
+      } else {
+        // RouterOS v7: /routing bgp session print
+        const bgpData = await conn.write("/routing/bgp/session/print");
+        bgpSessions = (bgpData || []).map((s: Record<string, string>) => ({
+          name: s.name || s["remote-address"] || "unknown",
+          remoteAddress: s["remote-address"] || "",
+          status: (s.state || "idle").toLowerCase(),
+          prefixCount: parseInt(s["prefix-count"] || "0", 10),
+          uptime: s.uptime || "0s",
+          remoteAs: parseInt(s["remote-as"] || "0", 10),
+        }));
+      }
     } catch { /* BGP not configured */ }
 
-    // OSPF neighbors
+    // OSPF neighbors - same command for v6 and v7
     let ospfNeighbors: unknown[] = [];
     try {
       const ospfData = await conn.write("/routing/ospf/neighbor/print");
@@ -193,9 +180,7 @@ export async function fetchRealRouterData(): Promise<{
 
     return { interfaces, health, bgpSessions, ospfNeighbors };
   } catch (err) {
-    if (conn) {
-      try { conn.close(); } catch { /* */ }
-    }
+    if (conn) { try { conn.close(); } catch { /* */ } }
     return null;
   }
 }

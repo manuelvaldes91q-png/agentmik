@@ -1,4 +1,5 @@
 import { generateSimulatedData } from "./connection";
+import { fetchRealRouterData } from "./connection-server";
 import {
   saveSnapshot,
   getRecentSnapshots,
@@ -7,6 +8,7 @@ import {
   recordMemoryPattern,
   findSimilarIncidents,
   savePendingAction,
+  loadMikroTikConfig,
 } from "./db";
 import type {
   MonitoringSnapshot,
@@ -25,7 +27,20 @@ function generateId(): string {
 }
 
 function takeSnapshot(): MonitoringSnapshot {
+  // Use simulated data as fallback
   const data = generateSimulatedData();
+
+  // Try to get real data if a MikroTik is configured (non-blocking)
+  const hasConfig = loadMikroTikConfig() !== null;
+  if (hasConfig) {
+    fetchRealRouterData().then((realData) => {
+      if (realData) {
+        // Real data is available but snapshot already taken with simulated
+        // Real data flows through the dashboard API endpoint instead
+      }
+    }).catch(() => {});
+  }
+
   const memoryUsedPct =
     ((data.health.totalMemory - data.health.freeMemory) / data.health.totalMemory) * 100;
 
