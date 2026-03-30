@@ -122,7 +122,7 @@ export async function fetchRealRouterData(): Promise<{
         try {
           const mon = await conn.write("/interface/monitor-traffic", [
             `=numbers=${iface[".id"]}`,
-            "=once=yes",
+            "=once=",
           ]);
           if (mon && mon[0]) {
             ratesMap[iface.name] = {
