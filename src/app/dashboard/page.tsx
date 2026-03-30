@@ -6,6 +6,7 @@ import { InterfaceCard } from "@/components/InterfaceCard";
 import { MetricBar } from "@/components/MetricBar";
 import { TrafficChart } from "@/components/TrafficChart";
 import { AlertItem } from "@/components/AlertItem";
+import { SecurityInsights } from "@/components/SecurityInsights";
 import type { BgpSession, OspfNeighbor } from "@/lib/types";
 
 interface SyncStatus {
@@ -340,6 +341,9 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* Security Insights Section */}
+      <SecurityInsights />
     </div>
   );
 }

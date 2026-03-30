@@ -15,6 +15,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const [kbStats, setKbStats] = useState({ totalChunks: 0, lastSync: null as string | null });
   const [agentStatus, setAgentStatus] = useState({ active: false, snapshots: 0 });
+  const [secStatus, setSecStatus] = useState({ active: false, activeEvents: 0, altaCount: 0 });
 
   useEffect(() => {
     fetch("/api/docs/sync")
@@ -31,6 +32,19 @@ export function Sidebar() {
       .then((json) => {
         if (json.success) {
           setAgentStatus({ active: json.active, snapshots: json.snapshotsCount || 0 });
+        }
+      })
+      .catch(() => {});
+
+    fetch("/api/security")
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success) {
+          setSecStatus({
+            active: json.ingestion?.active || false,
+            activeEvents: json.activeEvents || 0,
+            altaCount: json.altaCount || 0,
+          });
         }
       })
       .catch(() => {});
@@ -78,6 +92,14 @@ export function Sidebar() {
         <div className="flex items-center gap-2 text-xs text-slate-500">
           <div className={`w-2 h-2 rounded-full ${agentStatus.active ? "bg-emerald-500" : "bg-amber-500"} animate-pulse`} />
           <span>{agentStatus.active ? "Agente activo" : "Agente en standby"}</span>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
+          <div className={`w-2 h-2 rounded-full ${secStatus.active ? "bg-emerald-500" : "bg-slate-500"}`} />
+          <span>
+            {secStatus.active
+              ? `Security: ${secStatus.activeEvents} eventos` + (secStatus.altaCount > 0 ? ` (${secStatus.altaCount} alta)` : "")
+              : "Security: standby"}
+          </span>
         </div>
         <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
           <div className={`w-2 h-2 rounded-full ${kbStats.totalChunks > 0 ? "bg-emerald-500" : "bg-slate-500"}`} />

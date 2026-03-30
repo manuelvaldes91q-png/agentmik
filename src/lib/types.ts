@@ -136,3 +136,59 @@ export interface Incident {
   commands: string;
   resolved: boolean;
 }
+
+// Security Event Analysis types
+export interface LogEntry {
+  timestamp: string;
+  topics: string;
+  message: string;
+  rawCategory: string;
+}
+
+export interface SecurityEvent {
+  id: string;
+  timestamp: string;
+  severity: "baja" | "media" | "alta";
+  attackType: string;
+  sourceIp: string;
+  targetPort?: number;
+  targetService?: string;
+  evidenceCount: number;
+  timeWindowSeconds: number;
+  naturalLanguage: string;
+  technicalDetail: string;
+  documentationRef: string;
+  recommendedAction: string;
+  proposedCommand: string;
+  autoResponse: "inform" | "suggest" | "block-pending";
+  status: "active" | "acknowledged" | "resolved" | "auto-blocked";
+  relatedLogEntries: string[];
+}
+
+export interface AttackSignature {
+  name: string;
+  description: string;
+  detectFn: (entries: LogEntry[]) => DetectedAttack | null;
+}
+
+export interface DetectedAttack {
+  type: string;
+  sourceIp: string;
+  targetPort?: number;
+  targetService?: string;
+  evidenceCount: number;
+  timeWindowSeconds: number;
+  logEntries: string[];
+  confidence: number;
+}
+
+export interface SecurityStats {
+  totalEvents: number;
+  activeEvents: number;
+  altaCount: number;
+  mediaCount: number;
+  bajaCount: number;
+  blockedIps: string[];
+  lastAnalysis: string | null;
+  logsIngested: number;
+}

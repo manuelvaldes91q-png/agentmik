@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
-import type { Incident, MonitoringSnapshot, ProposedAction } from "@/lib/types";
+import type { Incident, MonitoringSnapshot, ProposedAction, SecurityEvent } from "@/lib/types";
 
 let dbInstance: Database.Database | null = null;
 
@@ -72,6 +72,30 @@ function getDb(): Database.Database {
       resolution TEXT DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_patterns_key ON memory_patterns(pattern_key);
+
+    CREATE TABLE IF NOT EXISTS security_events (
+      id TEXT PRIMARY KEY,
+      timestamp TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      attack_type TEXT NOT NULL,
+      source_ip TEXT NOT NULL,
+      target_port INTEGER,
+      target_service TEXT,
+      evidence_count INTEGER NOT NULL,
+      time_window_seconds INTEGER NOT NULL,
+      natural_language TEXT NOT NULL,
+      technical_detail TEXT NOT NULL,
+      documentation_ref TEXT DEFAULT '',
+      recommended_action TEXT NOT NULL,
+      proposed_command TEXT DEFAULT '',
+      auto_response TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      related_log_entries TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sec_events_severity ON security_events(severity);
+    CREATE INDEX IF NOT EXISTS idx_sec_events_status ON security_events(status);
+    CREATE INDEX IF NOT EXISTS idx_sec_events_ts ON security_events(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_sec_events_ip ON security_events(source_ip);
   `);
 
   return dbInstance;
@@ -313,6 +337,197 @@ export function cleanupOldSnapshots(): void {
   db.prepare(
     `DELETE FROM monitoring_snapshots WHERE timestamp < datetime('now', '-24 hours')`
   ).run();
+}
+
+// Security events
+export function saveSecurityEvent(event: SecurityEvent): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR REPLACE INTO security_events
+     (id, timestamp, severity, attack_type, source_ip, target_port, target_service,
+      evidence_count, time_window_seconds, natural_language, technical_detail,
+      documentation_ref, recommended_action, proposed_command, auto_response, status, related_log_entries)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    event.id,
+    event.timestamp,
+    event.severity,
+    event.attackType,
+    event.sourceIp,
+    event.targetPort || null,
+    event.targetService || null,
+    event.evidenceCount,
+    event.timeWindowSeconds,
+    event.naturalLanguage,
+    event.technicalDetail,
+    event.documentationRef,
+    event.recommendedAction,
+    event.proposedCommand,
+    event.autoResponse,
+    event.status,
+    JSON.stringify(event.relatedLogEntries)
+  );
+}
+
+export function getSecurityEvents(limit = 50): SecurityEvent[] {
+  const db = getDb();
+  const rows = db.prepare(
+    "SELECT * FROM security_events ORDER BY timestamp DESC LIMIT ?"
+  ).all(limit) as Array<{
+    id: string;
+    timestamp: string;
+    severity: string;
+    attack_type: string;
+    source_ip: string;
+    target_port: number | null;
+    target_service: string | null;
+    evidence_count: number;
+    time_window_seconds: number;
+    natural_language: string;
+    technical_detail: string;
+    documentation_ref: string;
+    recommended_action: string;
+    proposed_command: string;
+    auto_response: string;
+    status: string;
+    related_log_entries: string;
+  }>;
+
+  return rows.map(mapRowToSecurityEvent);
+}
+
+export function getActiveSecurityEvents(): SecurityEvent[] {
+  const db = getDb();
+  const rows = db.prepare(
+    "SELECT * FROM security_events WHERE status IN ('active', 'auto-blocked') ORDER BY timestamp DESC"
+  ).all() as Array<{
+    id: string;
+    timestamp: string;
+    severity: string;
+    attack_type: string;
+    source_ip: string;
+    target_port: number | null;
+    target_service: string | null;
+    evidence_count: number;
+    time_window_seconds: number;
+    natural_language: string;
+    technical_detail: string;
+    documentation_ref: string;
+    recommended_action: string;
+    proposed_command: string;
+    auto_response: string;
+    status: string;
+    related_log_entries: string;
+  }>;
+
+  return rows.map(mapRowToSecurityEvent);
+}
+
+export function getSecurityEventsByIp(ip: string, limit = 20): SecurityEvent[] {
+  const db = getDb();
+  const rows = db.prepare(
+    "SELECT * FROM security_events WHERE source_ip = ? ORDER BY timestamp DESC LIMIT ?"
+  ).all(ip, limit) as Array<{
+    id: string;
+    timestamp: string;
+    severity: string;
+    attack_type: string;
+    source_ip: string;
+    target_port: number | null;
+    target_service: string | null;
+    evidence_count: number;
+    time_window_seconds: number;
+    natural_language: string;
+    technical_detail: string;
+    documentation_ref: string;
+    recommended_action: string;
+    proposed_command: string;
+    auto_response: string;
+    status: string;
+    related_log_entries: string;
+  }>;
+
+  return rows.map(mapRowToSecurityEvent);
+}
+
+export function getSecurityStats(): {
+  totalEvents: number;
+  activeEvents: number;
+  altaCount: number;
+  mediaCount: number;
+  bajaCount: number;
+  blockedIps: string[];
+} {
+  const db = getDb();
+  const totalRow = db.prepare("SELECT COUNT(*) as c FROM security_events").get() as { c: number };
+  const activeRow = db.prepare("SELECT COUNT(*) as c FROM security_events WHERE status IN ('active','auto-blocked')").get() as { c: number };
+  const altaRow = db.prepare("SELECT COUNT(*) as c FROM security_events WHERE severity = 'alta'").get() as { c: number };
+  const mediaRow = db.prepare("SELECT COUNT(*) as c FROM security_events WHERE severity = 'media'").get() as { c: number };
+  const bajaRow = db.prepare("SELECT COUNT(*) as c FROM security_events WHERE severity = 'baja'").get() as { c: number };
+  const blockedRows = db.prepare(
+    "SELECT DISTINCT source_ip FROM security_events WHERE status = 'auto-blocked'"
+  ).all() as Array<{ source_ip: string }>;
+
+  return {
+    totalEvents: totalRow.c,
+    activeEvents: activeRow.c,
+    altaCount: altaRow.c,
+    mediaCount: mediaRow.c,
+    bajaCount: bajaRow.c,
+    blockedIps: blockedRows.map((r) => r.source_ip),
+  };
+}
+
+export function updateSecurityEventStatus(id: string, status: SecurityEvent["status"]): void {
+  const db = getDb();
+  db.prepare("UPDATE security_events SET status = ? WHERE id = ?").run(status, id);
+}
+
+export function cleanupOldSecurityEvents(): void {
+  const db = getDb();
+  db.prepare(
+    `DELETE FROM security_events WHERE timestamp < datetime('now', '-72 hours') AND status IN ('resolved','acknowledged')`
+  ).run();
+}
+
+function mapRowToSecurityEvent(row: {
+  id: string;
+  timestamp: string;
+  severity: string;
+  attack_type: string;
+  source_ip: string;
+  target_port: number | null;
+  target_service: string | null;
+  evidence_count: number;
+  time_window_seconds: number;
+  natural_language: string;
+  technical_detail: string;
+  documentation_ref: string;
+  recommended_action: string;
+  proposed_command: string;
+  auto_response: string;
+  status: string;
+  related_log_entries: string;
+}): SecurityEvent {
+  return {
+    id: row.id,
+    timestamp: row.timestamp,
+    severity: row.severity as SecurityEvent["severity"],
+    attackType: row.attack_type,
+    sourceIp: row.source_ip,
+    targetPort: row.target_port || undefined,
+    targetService: row.target_service || undefined,
+    evidenceCount: row.evidence_count,
+    timeWindowSeconds: row.time_window_seconds,
+    naturalLanguage: row.natural_language,
+    technicalDetail: row.technical_detail,
+    documentationRef: row.documentation_ref,
+    recommendedAction: row.recommended_action,
+    proposedCommand: row.proposed_command,
+    autoResponse: row.auto_response as SecurityEvent["autoResponse"],
+    status: row.status as SecurityEvent["status"],
+    relatedLogEntries: JSON.parse(row.related_log_entries) as string[],
+  };
 }
 
 export function closeDb(): void {
