@@ -1,38 +1,40 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 
 interface TrafficPoint { time: number; rx: number; tx: number; }
 
-function generateInitialData(count: number): TrafficPoint[] {
-  const now = Date.now();
-  return Array.from({ length: count }, (_, i) => ({
-    time: now - (count - 1 - i) * 2000,
-    rx: 20 + Math.random() * 40,
-    tx: 10 + Math.random() * 25,
-  }));
-}
+export function TrafficChart({ label, maxRate, rxRate, txRate, isReal }: { label: string; maxRate: number; rxRate?: number; txRate?: number; isReal?: boolean }) {
+  const [data, setData] = useState<TrafficPoint[]>([]);
+  const rxRef = useRef(rxRate ?? 0);
+  const txRef = useRef(txRate ?? 0);
 
-export function TrafficChart({ label, maxRate }: { label: string; maxRate: number }) {
-  const [data, setData] = useState<TrafficPoint[]>(() => generateInitialData(30));
+  // Update refs when props change
+  useEffect(() => {
+    if (rxRate !== undefined) rxRef.current = rxRate;
+    if (txRate !== undefined) txRef.current = txRate;
+  }, [rxRate, txRate]);
 
   useEffect(() => {
     const interval = setInterval(() => {
       setData((prev) => {
-        const next = [...prev.slice(1), {
+        const next = [...prev.slice(-29), {
           time: Date.now(),
-          rx: 20 + Math.random() * 40,
-          tx: 10 + Math.random() * 25,
+          rx: isReal ? rxRef.current / 1_000_000 : 20 + Math.random() * 40,
+          tx: isReal ? txRef.current / 1_000_000 : 10 + Math.random() * 25,
         }];
         return next;
       });
     }, 2000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isReal]);
 
   const height = 80;
   const width = 300;
-  const maxVal = maxRate || 60;
+
+  const maxVal = data.length > 0
+    ? Math.max(maxRate, ...data.map((p) => Math.max(p.rx, p.tx))) * 1.1
+    : maxRate;
 
   const rxPath = data.map((p, i) => {
     const x = (i / (data.length - 1)) * width;
@@ -49,8 +51,8 @@ export function TrafficChart({ label, maxRate }: { label: string; maxRate: numbe
   const rxFill = rxPath + ` L ${width} ${height} L 0 ${height} Z`;
   const txFill = txPath + ` L ${width} ${height} L 0 ${height} Z`;
 
-  const currentRx = data[data.length - 1]?.rx ?? 0;
-  const currentTx = data[data.length - 1]?.tx ?? 0;
+  const currentRx = data.length > 0 ? data[data.length - 1].rx : 0;
+  const currentTx = data.length > 0 ? data[data.length - 1].tx : 0;
 
   return (
     <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-800/50">
@@ -78,10 +80,14 @@ export function TrafficChart({ label, maxRate }: { label: string; maxRate: numbe
             <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0" />
           </linearGradient>
         </defs>
-        <path d={rxFill} fill={`url(#rx-grad-${label})`} />
-        <path d={txFill} fill={`url(#tx-grad-${label})`} />
-        <path d={rxPath} fill="none" stroke="#06b6d4" strokeWidth="1.5" />
-        <path d={txPath} fill="none" stroke="#8b5cf6" strokeWidth="1.5" />
+        {data.length > 1 && (
+          <>
+            <path d={rxFill} fill={`url(#rx-grad-${label})`} />
+            <path d={txFill} fill={`url(#tx-grad-${label})`} />
+            <path d={rxPath} fill="none" stroke="#06b6d4" strokeWidth="1.5" />
+            <path d={txPath} fill="none" stroke="#8b5cf6" strokeWidth="1.5" />
+          </>
+        )}
       </svg>
     </div>
   );

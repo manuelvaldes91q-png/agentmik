@@ -354,8 +354,24 @@ export default function DashboardPage() {
           <div>
             <h2 className="text-sm font-semibold text-slate-300 mb-3">Traffic Overview</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <TrafficChart label="ether1 (WAN)" maxRate={60} />
-              <TrafficChart label="ether2 (LAN)" maxRate={30} />
+              {data.interfaces
+                .filter((i) => i.status === "up")
+                .slice(0, 4)
+                .map((iface) => (
+                  <TrafficChart
+                    key={iface.name}
+                    label={`${iface.name}${iface.comment ? ` (${iface.comment})` : ""}`}
+                    maxRate={60}
+                    rxRate={iface.rxRate}
+                    txRate={iface.txRate}
+                    isReal={isRealData}
+                  />
+                ))}
+              {data.interfaces.filter((i) => i.status === "up").length === 0 && (
+                <div className="col-span-2 bg-slate-900/50 rounded-lg p-4 border border-slate-800/50 text-center text-sm text-slate-500">
+                  No hay interfaces activas
+                </div>
+              )}
             </div>
           </div>
 
