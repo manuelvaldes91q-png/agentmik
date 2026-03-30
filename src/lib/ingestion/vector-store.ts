@@ -106,6 +106,11 @@ export class VectorStore {
     this.idfCache = null;
   }
 
+  clearByCategory(category: string): void {
+    this.db.prepare("DELETE FROM doc_chunks WHERE category = ?").run(category);
+    this.loadVectorIndex();
+  }
+
   search(query: string, limit = 5): SearchResult[] {
     if (!query.trim() || this.vectorIndex.size === 0) return [];
 

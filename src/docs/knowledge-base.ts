@@ -527,6 +527,184 @@ add action=drop chain=forward comment="Drop all forward"
 /ip hotspot profile set [find default=yes] html-directory=hotspot`,
     tags: ["hotspot", "autenticacion", "v6", "wifi", "portal"],
   },
+  {
+    id: "v6-routing-001",
+    category: "Routing Avanzado",
+    topic: "Ruteo Recursivo con Scope y Target-Scope (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "El ruteo recursivo en v6 permite failover automatico. Usa scope para limitar la profundidad de busqueda y target-scope para definir el alcance del gateway. Para failover con dos gateways, la ruta principal tiene scope=10 y la secundaria scope=20. Si el gateway principal falla (ping check con /tool netwatch), la ruta se invalida y el trafico usa la secundaria. La clave es usar check-gateway=ping con /tool netwatch para detectar fallos.",
+    codeExample: `/tool netwatch add host=190.1.1.1 interval=5s timeout=1s up-script="" down-script=""
+/tool netwatch add host=190.1.2.1 interval=5s timeout=1s up-script="" down-script=""
+/ip route
+add dst-address=0.0.0.0/0 gateway=190.1.1.1 scope=10 target-scope=10 check-gateway=ping comment="WAN1 Principal"
+add dst-address=0.0.0.0/0 gateway=190.1.2.1 scope=20 target-scope=20 routing-mark=WAN2 comment="WAN2 Backup"
+add dst-address=190.1.1.1/32 gateway=190.1.1.1 scope=10
+add dst-address=190.1.2.1/32 gateway=190.1.2.1 scope=10`,
+    tags: ["routing", "failover", "scope", "v6", "recursivo", "netwatch"],
+  },
+  {
+    id: "v6-routing-002",
+    category: "Routing Avanzado",
+    topic: "OSPF por Instancias y Areas Clasicas (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "En v6, OSPF se configura con /routing ospf instance (una por proceso) y /routing ospf area (areas OSPF). Las interfaces se asignan con /routing ospf interface. Para filtrar rutas OSPF usa /routing ospf export-filter e import-filter. La redistribucion de rutas se hace dentro de la instancia con redistribute-connected, redistribute-static, etc. Para multiple areas, crea area=backbone para el area 0 y areas adicionales para stub/NSSA.",
+    codeExample: `/routing ospf instance set [find default=yes] router-id=10.0.0.1 redistribute-connected=as-type-1 redistribute-static=no
+/routing ospf area add name=area-stub area-id=0.0.0.1 type=stub
+/routing ospf networks add network=192.168.1.0/24 area=backbone
+/routing ospf networks add network=10.10.0.0/24 area=area-stub
+/routing ospf interface add interface=ether2 network-type=broadcast
+/routing ospf neighbor print
+/routing ospf route print`,
+    tags: ["ospf", "routing", "v6", "area", "instancia", "redistribucion"],
+  },
+  {
+    id: "v6-routing-003",
+    category: "Routing Avanzado",
+    topic: "BGP con Filtros de Entrada para Full Route (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "En v6, BGP se configura con /routing bgp peer. Para recibir full route (tabla completa de internet ~900k+ prefijos), usa prefix-limit=0 (sin limite) o un valor alto. Los filtros de entrada se hacen con /routing filter chain y se aplican al peer con in-filter. Para anunciar solo tus prefijos, usa out-filter con action=accept solo para tus redes. Usa /routing bgp advertisements print para ver que anuncias.",
+    codeExample: `/routing filter chain add name=bgp-in-filter rule="if (dst in 0.0.0.0/0) { accept }"
+/routing filter chain add name=bgp-out-filter rule="if (dst in 200.1.1.0/24) { accept } else { reject }"
+/routing bgp peer add name=ISP-BGP remote-address=203.0.113.1 remote-as=64512 \\
+  in-filter=bgp-in-filter out-filter=bgp-out-filter \\
+  prefix-limit=1000000 ttl=default disabled=no
+/routing bgp peer print where state=established
+/routing bgp advertisements print
+/ip route print where bgp=yes count-only`,
+    tags: ["bgp", "routing", "v6", "full-route", "filtros", "peer"],
+  },
+  {
+    id: "v6-qos-001",
+    category: "QoS",
+    topic: "PCC (Per Connection Classifier) para Balanceo Multi-WAN (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "PCC es el metodo preferido para balanceo de carga en v6. Usa mangle para marcar conexiones y rutas con routing-mark. La formula PCC es: per-connection-classifier=src-address:dst-address:N/M donde N es el numero de este gateway (0,1,...) y M es el total de gateways. Se necesitan reglas de mangle para marcar conexiones entrantes y salientes, rutas marcadas, y reglas de NAT para cada WAN.",
+    codeExample: `/ip firewall mangle
+add chain=prerouting dst-address-type=!local in-interface=ether2 per-connection-classifier=both-addresses:2/0 action=mark-connection new-connection-mark=wan1_conn passthrough=yes
+add chain=prerouting dst-address-type=!local in-interface=ether2 per-connection-classifier=both-addresses:2/1 action=mark-connection new-connection-mark=wan2_conn passthrough=yes
+add chain=prerouting connection-mark=wan1_conn action=mark-routing new-routing-mark=to_wan1
+add chain=prerouting connection-mark=wan2_conn action=mark-routing new-routing-mark=to_wan2
+/ip route
+add dst-address=0.0.0.0/0 gateway=190.1.1.1 routing-mark=to_wan1
+add dst-address=0.0.0.0/0 gateway=190.1.2.1 routing-mark=to_wan2
+/ip firewall nat
+add chain=srcnat out-interface=ether1 action=masquerade
+add chain=srcnat out-interface=ether3 action=masquerade`,
+    tags: ["pcc", "balanceo", "multi-wan", "v6", "mangle", "qos"],
+  },
+  {
+    id: "v6-qos-002",
+    category: "QoS",
+    topic: "PCQ (Per Connection Queuing) para Gestion Masiva de Ancho de Banda (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "PCQ permite distribuir equitativamente el ancho de banda entre todos los usuarios sin crear una queue por cada IP. Se define un queue type PCQ con classifier por src-address (upload) y dst-address (download). Luego se aplica con /queue simple o /queue tree. Para limitar 5Mbps por usuario con un total de 100Mbps: max-limit=100M y pcq-rate=5M. PCQ es esencial para ISPs con cientos de clientes.",
+    codeExample: `/queue type add name=pcq-download kind=pcq pcq-classifier=dst-address pcq-rate=5M
+/queue type add name=pcq-upload kind=pcq pcq-classifier=src-address pcq-rate=5M
+/queue simple add name=clientes-total target=192.168.1.0/24 max-limit=100M/100M queue=pcq-upload/pcq-download
+/queue simple print
+# Para ver estadisticas por usuario:
+/queue simple print stats
+# PCQ con prioridades (usando pcq-dst-address6-mask y pcq-src-address6-mask):
+/queue type add name=pcq-prio-down kind=pcq pcq-classifier=dst-address pcq-rate=0 pcq-total-limit=2000`,
+    tags: ["pcq", "queue", "qos", "v6", "ancho-banda", "isp"],
+  },
+  {
+    id: "v6-security-001",
+    category: "Seguridad Avanzada",
+    topic: "Mitigacion DDoS con Address-Lists Dinamicas (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "Proteccion DDoS en v6 usando address-lists dinamicas con timeout. La tecnica: detectar conexiones excesivas por IP, agregar a address-list con timeout, y drop todo el trafico de esa IP. Usar connection-rate y connection-limit para detectar ataques. Para SYN flood, limitar nuevas conexiones TCP por segundo. Para UDP flood, limitar paquetes por segundo con /ip firewall filter y connection-limit.",
+    codeExample: `/ip firewall filter
+add chain=input action=add-src-to-address-list address-list=ddos-flood address-list-timeout=1h connection-rate=2000-4294967295 protocol=tcp connection-state=new
+add chain=input action=add-src-to-address-list address-list=port-scan address-list-timeout=1d protocol=tcp psd=21,3s,3,1
+add chain=input action=drop src-address-list=ddos-flood
+add chain=input action=drop src-address-list=port-scan
+add chain=input action=add-src-to-address-list address-list=brute-force address-list-timeout=1d connection-limit=3/30s protocol=tcp dst-port=22,8291
+add chain=input action=drop src-address-list=brute-force
+add chain=input action=drop protocol=udp dst-port=53 connection-limit=50/10s
+add chain=forward action=drop src-address-list=ddos-flood
+add chain=forward action=drop dst-address-list=ddos-flood`,
+    tags: ["ddos", "seguridad", "v6", "firewall", "address-list", "brute-force"],
+  },
+  {
+    id: "v6-security-002",
+    category: "Seguridad Avanzada",
+    topic: "FastTrack para Rendimiento (RouterOS v6.29+)",
+    routerOsVersion: "6.x",
+    content:
+      "FastTrack (introducido en v6.29) permite que el trafico establecido y relacionado saltee el procesamiento del firewall, mejorando drasticamente el rendimiento. Se activa con action=fasttrack-connection en la regla de accept established/related. Nota: FastTrack solo funciona con CPU y no con hardware offload. FastTrack bypassa connection tracking, queue simple, y mangle. Deshabilitalo si usas queues complejas o mangle.",
+    codeExample: `/ip firewall filter
+add action=fasttrack-connection chain=connection-state=established,related
+add action=accept chain=input connection-state=established,related
+add action=drop chain=input connection-state=invalid
+# Para verificar si FastTrack esta funcionando:
+/ip firewall connection print where fasttrack-connection
+# Si usas queues, NO habilites FastTrack o las queues no funcionaran:
+# /ip firewall filter add action=accept chain=forward connection-state=established,related
+# (sin fasttrack)`,
+    tags: ["fasttrack", "rendimiento", "v6", "firewall", "optimizacion"],
+  },
+  {
+    id: "v6-troubleshooting-001",
+    category: "Troubleshooting",
+    topic: "Analisis de CPU con /tool profile (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "En v6, /tool profile muestra el uso de CPU por proceso interno. Ejecutalo por 10-30 segundos para ver que proceso consume mas CPU. Los procesos comunes que causan alta CPU: firewall (reglas mal ordenadas), routing (BGP con full table), queuing (demasiadas queues simples), networking (DDoS o flood). Si 'firewall' consume >30%, reordena las reglas para usar fasttrack o raw rules. Si 'routing' consume mucho, verifica que BGP no este recibiendo mas prefijos de los necesarios.",
+    codeExample: `/tool profile duration=15
+# Esperar 15 segundos y revisar la salida
+# Si firewall es el problema:
+/ip firewall filter print stats
+# Reordenar reglas: established/related primero, drop invalid, luego el resto
+# Si routing es el problema:
+/routing bgp peer print stats
+# Si networking es el problema:
+/ip firewall connection print count
+/interface ethernet monitor-traffic ether1`,
+    tags: ["cpu", "profile", "troubleshooting", "v6", "rendimiento", "diagnostico"],
+  },
+  {
+    id: "v6-troubleshooting-002",
+    category: "Troubleshooting",
+    topic: "Fragmentacion de Paquetes: MSS Clamping y MTU (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "En tuneles L2TP/IPsec, PPPoE, y GRE, el MTU efectivo se reduce por la sobrecarga del encapsulamiento. Para evitar fragmentacion, ajusta el MSS con mangle rules. PPPoE: MTU 1492, MSS 1452. L2TP/IPsec: MTU ~1400, MSS ~1360. GRE: MTU 1476, MSS 1436. Usa /ip firewall mangle con action=change-mss y protocol=tcp tcp-flags=syn para ajustar MSS automaticamente. Tambien ajusta el MTU en la interfaz del tunel.",
+    codeExample: `/ip firewall mangle
+add chain=forward protocol=tcp tcp-flags=syn action=change-mss new-mss=1452 comment="MSS Clamp PPPoE"
+add chain=forward protocol=tcp tcp-flags=syn action=change-mss new-mss=1360 out-interface=l2tp-out1 comment="MSS Clamp L2TP"
+/interface pppoe-client set [find] mtu=1492 mru=1492
+/interface l2tp-client set [find] mtu=1400 mru=1400
+# Para diagnosticar problemas de fragmentacion:
+/ping 8.8.8.8 size=1472 do-not-fragment
+/tool ping 8.8.8.8 size=1400 do-not-fragment`,
+    tags: ["mtu", "mss", "fragmentacion", "v6", "pppoe", "l2tp", "ipsec"],
+  },
+  {
+    id: "v6-troubleshooting-003",
+    category: "Troubleshooting",
+    topic: "Optimizacion de RAM: Deshabilitar Paquetes Innecesarios (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "En routers con poca RAM (RB750, RB951, hAP lite), deshabilitar paquetes innecesarios libera memoria. Los paquetes que mas RAM consumen: dude, hotspot, mpls, routing (si no usas BGP/OSPF), ppp,ups, wireless (si es cableado). Usa /system package print para ver los instalados y /system package disable para deshabilitar. El router debe reiniciarse para que tome efecto. Cuidado: no deshabilites system, routeros, security, o advanced-tools.",
+    codeExample: `/system package print
+# Identificar paquetes no usados
+/system package disable hotspot
+/system package disable mpls
+/system package disable ppp
+/system package disable wireless
+/system package disable dhcp
+/system reboot
+# Despues del reboot verificar RAM libre:
+/system resource print`,
+    tags: ["ram", "memoria", "v6", "optimizacion", "paquetes", "rendimiento"],
+  },
 ];
 
 export function searchKnowledge(query: string): KnowledgeEntry[] {
