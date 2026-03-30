@@ -1,48 +1,41 @@
-# Project Brief: Next.js Starter Template
+# Project Brief: MikroTik Expert Sentinel
 
 ## Purpose
 
-This is a minimal Next.js starter template designed for AI-assisted development. It provides a clean foundation that can be extended to build any type of web application through interaction with an AI assistant.
+A full-stack AI-powered MikroTik RouterOS expert assistant application that provides real-time network monitoring, configuration analysis, and an AI chatbot specialized in MikroTik networking.
 
 ## Target Users
 
-- Developers wanting a clean Next.js starting point
-- Users building applications through AI-assisted coding
-- Teams needing a standardized, modern Next.js setup
+- Network engineers managing MikroTik infrastructure
+- ISPs and WISPs using RouterOS
+- System administrators needing RouterOS configuration help
 
 ## Core Use Case
 
-Users describe what they want to build to an AI assistant, which then expands this template by:
-
-1. Adding components and pages as needed
-2. Installing additional dependencies
-3. Setting up databases, authentication, etc. using recipes
-4. Customizing styling and branding
+1. **Dashboard**: Monitor router interfaces, CPU/RAM, BGP/OSPF sessions, and receive alerts
+2. **AI Chatbot**: Get expert RouterOS v7 configuration help with code examples
+3. **Config Analyzer**: Upload .rsc files to detect security issues and get suggestions
+4. **Settings**: Configure real MikroTik API connection for live data
 
 ## Key Requirements
 
 ### Must Have
+- Next.js 16 with App Router and TypeScript
+- Tailwind CSS 4 dark mode (Slate/Zinc theme)
+- RAG knowledge base for MikroTik documentation
+- Dashboard with traffic charts, system health, interface status
+- AI chatbot with code block highlighting
+- .rsc configuration file analyzer
+- MikroTik API connection settings
+- Modular structure: /components, /lib/mikrotik, /docs
 
-- Modern Next.js 16 setup with App Router
-- TypeScript for type safety
-- Tailwind CSS 4 for styling
-- ESLint for code quality
-- Clean, minimal starting structure
-- Bun as package manager
-
-### Nice to Have
-
-- Recipe system for common additions (database, auth)
-- Memory bank for AI context persistence
-- Clear development guidelines
-
-## Success Metrics
-
-- Clean, zero-error TypeScript setup
-- Passing lint and type checks
+### Technical
+- RouterOS v7 prioritized
+- Security best practices (Firewall, Mangle, Raw rules)
+- Simulated data for demo, real API integration ready
 
 ## Constraints
 
-- Minimal dependencies by default
-- Framework: Next.js 16 + React 19 + Tailwind CSS 4
 - Package manager: Bun
+- No external AI API - uses local knowledge base search
+- Simulated monitoring data in demo mode
