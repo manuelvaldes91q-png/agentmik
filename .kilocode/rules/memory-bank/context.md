@@ -60,3 +60,4 @@ All text is in Spanish:
 | 2026-03-30 | Dashboard now fetches real router data when configured, simulated data only as preview |
 | 2026-03-30 | Traffic charts use real interface rates, dynamically render active interfaces |
 | 2026-03-30 | RouterOS v6/v7 compatibility: dynamic BGP commands, version detection |
+| 2026-03-30 | Added v6 knowledge base entries, chat engine v6/v7 aware, improved fetch error diagnostics |

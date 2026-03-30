@@ -113,22 +113,42 @@ export async function fetchRealRouterData(): Promise<{
 
     // Fetch interfaces - works the same on v6 and v7
     const ifaceData = await conn.write("/interface/print");
+    const ifaceList = ifaceData || [];
 
-    // Debug: log raw interface data from router
-    if (ifaceData && ifaceData.length > 0) {
-      console.log("[MikroTik] Raw interface sample:", JSON.stringify(ifaceData[0]));
+    // Get real-time rates via monitor-traffic for active interfaces
+    const ratesMap: Record<string, { rxRate: number; txRate: number }> = {};
+    for (const iface of ifaceList) {
+      if (iface.running === "true") {
+        try {
+          const mon = await conn.write("/interface/monitor-traffic", [
+            `=numbers=${iface[".id"]}`,
+            "=once=yes",
+          ]);
+          if (mon && mon[0]) {
+            ratesMap[iface.name] = {
+              rxRate: parseInt(mon[0]["rx-bits-per-second"] || "0", 10),
+              txRate: parseInt(mon[0]["tx-bits-per-second"] || "0", 10),
+            };
+          }
+        } catch {
+          // monitor-traffic may fail for some interface types
+        }
+      }
     }
 
-    const interfaces = (ifaceData || []).map((i: Record<string, string>) => ({
-      name: i.name,
-      type: i.type || "ether",
-      status: (i.running === "true" ? "up" : "down") as "up" | "down",
-      rxBytes: parseInt(i["rx-byte"] || "0", 10),
-      txBytes: parseInt(i["tx-byte"] || "0", 10),
-      rxRate: parseInt(i["rx-bits-per-second"] || i["rx-bits-per-second-0"] || "0", 10),
-      txRate: parseInt(i["tx-bits-per-second"] || i["tx-bits-per-second-0"] || "0", 10),
-      comment: i.comment || undefined,
-    }));
+    const interfaces = ifaceList.map((i: Record<string, string>) => {
+      const rates = ratesMap[i.name] || { rxRate: 0, txRate: 0 };
+      return {
+        name: i.name,
+        type: i.type || "ether",
+        status: (i.running === "true" ? "up" : "down") as "up" | "down",
+        rxBytes: parseInt(i["rx-byte"] || "0", 10),
+        txBytes: parseInt(i["tx-byte"] || "0", 10),
+        rxRate: rates.rxRate || parseInt(i["rx-bits-per-second"] || "0", 10),
+        txRate: rates.txRate || parseInt(i["tx-bits-per-second"] || "0", 10),
+        comment: i.comment || undefined,
+      };
+    });
 
     const health = {
       cpuLoad: parseInt(res["cpu-load"] || "0", 10),
