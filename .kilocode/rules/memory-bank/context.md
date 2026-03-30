@@ -45,6 +45,7 @@ All text is in Spanish:
 - Credentials persisted in SQLite `mikrotik_config` table
 - Connection test via node-routeros (server-side only)
 - Simulated data used as fallback when no real router configured
+- "Eliminar Configuracion" button to delete saved credentials from DB
 
 ## Session History
 
@@ -55,3 +56,4 @@ All text is in Spanish:
 | 2026-03-30 | v2.0 CoT: Chain-of-Thought reasoning, autonomous monitoring |
 | 2026-03-30 | v3.0 Security: Real-time log ingestion, attack pattern recognition |
 | 2026-03-30 | v3.1: Full Spanish localization, real MikroTik connection with node-routeros, credential persistence |
+| 2026-03-30 | Added delete MikroTik config button to remove saved router credentials |
