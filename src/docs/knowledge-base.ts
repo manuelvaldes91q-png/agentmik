@@ -371,6 +371,162 @@ add action=src-nat chain=srcnat out-interface=ether1 to-addresses=203.0.113.10`,
 /user group set read policy=api,read,test`,
     tags: ["api", "configuration", "v6", "security"],
   },
+  {
+    id: "v6-basic-001",
+    category: "Configuracion",
+    topic: "Configuracion Basica de Interfaces (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "En RouterOS v6, las interfaces se configuran con /ip address para asignar IPs. Para ver el estado de las interfaces usa /interface print. Para ver trafico en tiempo real: /interface monitor-traffic [find]. Para ver estadisticas acumuladas: /interface print stats. Las interfaces ether son las tarjetas de red fisicas, bridge agrupa interfaces, vlan crea VLANs, y pppoe-out para conexiones PPPoE.",
+    codeExample: `/ip address add address=192.168.1.1/24 interface=ether2
+/ip address print
+/interface print
+/interface print stats
+/interface monitor-traffic ether1`,
+    tags: ["interfaces", "configuracion", "v6", "basico", "trafico"],
+  },
+  {
+    id: "v6-basic-002",
+    category: "Configuracion",
+    topic: "DHCP Server y Cliente (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "En v6, para crear un DHCP server: primero crea un pool de IPs, luego configura la red DHCP, y finalmente habilita el server. Para DHCP client (WAN): /ip dhcp-client add interface=ether1. Para ver leases: /ip dhcp-server lease print. El DHCP server de v6 usa /ip dhcp-server setup que es un wizard interactivo.",
+    codeExample: `/ip pool add name=dhcp-pool ranges=192.168.1.100-192.168.1.200
+/ip dhcp-server add name=dhcp1 interface=ether2 address-pool=dhcp-pool
+/ip dhcp-server network add address=192.168.1.0/24 gateway=192.168.1.1 dns-server=8.8.8.8
+/ip dhcp-server lease print
+/ip dhcp-client add interface=ether1 disabled=no`,
+    tags: ["dhcp", "configuracion", "v6", "basico"],
+  },
+  {
+    id: "v6-basic-003",
+    category: "Configuracion",
+    topic: "DNS y Ruta por Defecto (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "Para configurar DNS en v6: /ip dns set servers=8.8.8.8,8.8.4.4 allow-remote-requests=yes. Para habilitar cache DNS: /ip dns cache flush. Para ruta por defecto: /ip route add dst-address=0.0.0.0/0 gateway=IP_DEL_GATEWAY. Para ver rutas: /ip route print. Para verificar conectividad: /ping 8.8.8.8.",
+    codeExample: `/ip dns set servers=8.8.8.8,8.8.4.4 allow-remote-requests=yes
+/ip dns cache print
+/ip route add dst-address=0.0.0.0/0 gateway=190.1.1.1
+/ip route print
+/ping 8.8.8.8 count=5
+/tool traceroute 8.8.8.8`,
+    tags: ["dns", "routing", "v6", "basico", "conectividad"],
+  },
+  {
+    id: "v6-basic-004",
+    category: "Configuracion",
+    topic: "PPPoE en RouterOS v6 (Comun en ISPs)",
+    routerOsVersion: "6.x",
+    content:
+      "PPPoE es muy comun en ISPs con MikroTik v6. Para configurar PPPoE client: /interface pppoe-client add name=pppoe-out1 interface=ether1 user=USUARIO password=CONTRASENA add-default-route=yes. Para ver estado: /interface pppoe-client print stats. Para desconectar: /interface pppoe-client disable pppoe-out1. En el lado del servidor: /interface pppoe-server server.",
+    codeExample: `/interface pppoe-client add name=pppoe-out1 interface=ether1 user=cliente1 password=pass123 add-default-route=yes disabled=no
+/interface pppoe-client print
+/interface pppoe-client print stats
+# Lado servidor:
+/ppp secret add name=cliente1 password=pass123 service=pppoe
+/interface pppoe-server server set default-service=pppoe-service1`,
+    tags: ["pppoe", "isp", "v6", "conexion", "wan"],
+  },
+  {
+    id: "v6-basic-005",
+    category: "Configuracion",
+    topic: "Monitoreo de Trafico en RouterOS v6",
+    routerOsVersion: "6.x",
+    content:
+      "Para monitorear trafico en v6: /interface print stats muestra bytes acumulados por interfaz. /interface monitor-traffic muestra tasas en tiempo real (rx-bits-per-second, tx-bits-per-second). Para monitoreo por SNMP: /snmp set enabled=yes. Para graficos: /tool graphing interface set [find] allow-address=REDE. Para ver conexiones activas: /ip firewall connection print. Para ver el trafico por IP: /ip accounting print.",
+    codeExample: `/interface print stats
+/interface monitor-traffic ether1
+/interface monitor-traffic [find]
+/ip firewall connection print count
+/ip accounting print
+/tool bandwidth-test IP_SERVIDOR direction=both`,
+    tags: ["monitoreo", "trafico", "v6", "estadisticas", "interfaces"],
+  },
+  {
+    id: "v6-basic-006",
+    category: "Configuracion",
+    topic: "Queues y Control de Ancho de Banda (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "En v6, para limitar ancho de banda usa /queue simple. Simple queues son la forma mas facil de limitar velocidad por IP o subred. Para Queue Trees necesitas mangle rules primero. PCQ (Per Connection Queue) permite repartir ancho de banda equitativamente entre usuarios.",
+    codeExample: `/queue simple add name=limite-usuario target=192.168.1.100/32 max-limit=10M/10M
+queue simple add name=limite-red target=192.168.1.0/24 max-limit=50M/50M
+/queue simple print
+# PCQ para compartir ancho de banda equitativamente:
+/queue type add name=pcq-download kind=pcq pcq-classifier=dst-address
+/queue type add name=pcq-upload kind=pcq pcq-classifier=src-address
+/queue simple add name=usuarios target=192.168.1.0/24 queue=pcq-upload/pcq-download`,
+    tags: ["queue", "bandwidth", "v6", "qos", "limitar"],
+  },
+  {
+    id: "v6-basic-007",
+    category: "Configuracion",
+    topic: "Comandos de Diagnostico en RouterOS v6",
+    routerOsVersion: "6.x",
+    content:
+      "Comandos esenciales de diagnostico en v6: /ping para verificar conectividad. /tool traceroute para rastrear rutas. /tool profile para ver uso de CPU por proceso. /log print para ver logs del sistema. /system resource print para ver recursos del sistema. /interface monitor-traffic para ver trafico en tiempo real. /ip firewall connection print para ver conexiones activas. /tool netwatch para monitorear hosts.",
+    codeExample: `/ping 8.8.8.8 count=5
+/tool traceroute 8.8.8.8
+/log print where topics~"info"
+/system resource print
+/interface monitor-traffic [find]
+/ip firewall connection print count
+/tool netwatch print
+/tool profile`,
+    tags: ["diagnostico", "troubleshooting", "v6", "ping", "traceroute", "logs"],
+  },
+  {
+    id: "v6-basic-008",
+    category: "Seguridad",
+    topic: "Firewall Basico para Redes Pequenas (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "Firewall basico para v6 en redes pequenas o ISPs: aceptar establecidos/relacionados primero, permitir ICMP, permitir acceso admin por SSH, permitir trafico LAN, y drop todo lo demas del WAN. Para proteger contra port scans: agregar a address-list con timeout. Para DDoS basico: limitar conexiones nuevas por segundo.",
+    codeExample: `/ip firewall filter
+add action=accept chain=input connection-state=established,related
+add action=drop chain=input connection-state=invalid
+add action=accept chain=input protocol=icmp
+add action=accept chain=input dst-port=22 protocol=tcp src-address-list=admin
+add action=accept chain=input in-interface=ether2
+add action=drop chain=input in-interface=ether1 comment="Drop WAN input"
+add action=accept chain=forward connection-state=established,related
+add action=drop chain=forward connection-state=invalid
+add action=accept chain=forward in-interface=ether2
+add action=drop chain=forward comment="Drop all forward"
+/ip firewall address-list add list=admin address=TU_IP_PUBLICA`,
+    tags: ["firewall", "seguridad", "v6", "basico", "proteccion"],
+  },
+  {
+    id: "v6-basic-009",
+    category: "Configuracion",
+    topic: "Bridge y VLAN en RouterOS v6",
+    routerOsVersion: "6.x",
+    content:
+      "En v6, para crear un bridge: /interface bridge add name=bridge1. Para agregar puertos: /interface bridge port add bridge=bridge1 interface=ether2. Para VLANs: /interface vlan add name=vlan10 vlan-id=10 interface=bridge1. Para filtrar VLANs en el bridge: /interface bridge set bridge1 vlan-filtering=yes. Importante: activa RSTP para evitar loops: /interface bridge set bridge1 protocol-mode=rstp.",
+    codeExample: `/interface bridge add name=bridge1 protocol-mode=rstp
+/interface bridge port add bridge=bridge1 interface=ether2
+/interface bridge port add bridge=bridge1 interface=ether3
+/interface vlan add name=vlan10 vlan-id=10 interface=bridge1
+/ip address add address=10.0.10.1/24 interface=vlan10`,
+    tags: ["bridge", "vlan", "v6", "red", "switching"],
+  },
+  {
+    id: "v6-basic-010",
+    category: "Configuracion",
+    topic: "Hotspot en RouterOS v6",
+    routerOsVersion: "6.x",
+    content:
+      "El Hotspot de MikroTik v6 permite autenticacion de usuarios para acceso a internet. Se configura con /ip hotspot. El wizard /ip hotspot setup crea automaticamente el server, perfil, y pagina de login. Para usuarios: /ip hotspot user add. Para ver usuarios activos: /ip hotspot active print. Para limitar tiempo o trafico por usuario usa user profiles.",
+    codeExample: `/ip hotspot setup
+/ip hotspot user add name=usuario1 password=pass123
+/ip hotspot user add name=usuario2 password=pass456 limit-uptime=2h
+/ip hotspot active print
+/ip hotspot user print
+/ip hotspot profile set [find default=yes] html-directory=hotspot`,
+    tags: ["hotspot", "autenticacion", "v6", "wifi", "portal"],
+  },
 ];
 
 export function searchKnowledge(query: string): KnowledgeEntry[] {
