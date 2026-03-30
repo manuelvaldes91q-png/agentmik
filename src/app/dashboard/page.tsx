@@ -97,16 +97,16 @@ export default function DashboardPage() {
       .then((configData) => {
         if (configData.status === "configured") {
           setIsConfigured(true);
-          // Fetch real data immediately and every 10s
+          // Fetch real data immediately and every 5s for live charts
           fetchRealData();
-          const interval = setInterval(fetchRealData, 10000);
+          const interval = setInterval(fetchRealData, 5000);
           return () => clearInterval(interval);
         } else {
           setIsConfigured(false);
           // Use simulated data as preview
           const tick = () => setData(generateSimulatedData());
           tick();
-          const interval = setInterval(tick, 10000);
+          const interval = setInterval(tick, 5000);
           return () => clearInterval(interval);
         }
       })
@@ -114,7 +114,7 @@ export default function DashboardPage() {
         setIsConfigured(false);
         const tick = () => setData(generateSimulatedData());
         tick();
-        const interval = setInterval(tick, 10000);
+        const interval = setInterval(tick, 5000);
         return () => clearInterval(interval);
       });
   }, []);
@@ -277,11 +277,24 @@ export default function DashboardPage() {
       )}
 
       {fetchError && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm text-red-400 flex items-center justify-between">
-          <span>Error de conexion al router: {fetchError}</span>
-          <button onClick={fetchRealData} className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white rounded text-xs">
-            Reintentar
-          </button>
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <svg className="w-5 h-5 text-red-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+              <div>
+                <p className="text-sm text-red-400 font-medium">Error de conexion al router</p>
+                <p className="text-xs text-red-300/70 mt-1">{fetchError}</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Verifica la configuracion en <a href="/settings" className="underline hover:text-slate-300">/settings</a> o revisa los logs del servidor.
+                </p>
+              </div>
+            </div>
+            <button onClick={fetchRealData} className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-medium shrink-0">
+              Reintentar
+            </button>
+          </div>
         </div>
       )}
 

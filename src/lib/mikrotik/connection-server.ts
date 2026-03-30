@@ -22,18 +22,27 @@ function createConnection(config: MikroTikConfig): RouterOSAPI {
 
 function parseError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
+  const raw = err instanceof Error ? err.stack || err.message : String(err);
+
+  console.log(`[MikroTik] Error de conexion: ${raw}`);
 
   if (msg.includes("ECONNREFUSED") || msg.includes("connect")) {
-    return `Conexion rechazada. Verifica que el servicio API este habilitado: /ip service enable api`;
+    return `Error: Conexion rechazada (puerto cerrado o API deshabilitada). Habilita el servicio API: /ip service enable api`;
   }
   if (msg.includes("ETIMEDOUT") || msg.includes("timeout")) {
-    return `Timeout de conexion. Verifica que la IP sea alcanzable y el puerto este abierto en el firewall.`;
+    return `Error: Timeout de conexion. Verifica la IP (${msg}) y que el puerto 8728 este abierto en el firewall del router.`;
   }
   if (msg.includes("login") || msg.includes("auth") || msg.includes("password") || msg.includes("invalid")) {
-    return `Autenticacion fallida. Verifica usuario y contrasena: /user group set read policy=api,read,test`;
+    return `Error: Autenticacion fallida. Verifica usuario/contrasena. El usuario debe tener permisos: /user group set read policy=api,read,test`;
   }
   if (msg.includes("CERT") || msg.includes("certificate") || msg.includes("SSL")) {
-    return `Error SSL/TLS. Verifica el certificado o deshabilita SSL.`;
+    return `Error: SSL/TLS invalido. Si usas puerto 8729, verifica el certificado o usa puerto 8728 sin SSL.`;
+  }
+  if (msg.includes("EHOSTUNREACH") || msg.includes("ENETUNREACH")) {
+    return `Error: Host o red inalcanzable. Verifica la IP del router y la conectividad de red.`;
+  }
+  if (msg.includes("ECONNRESET")) {
+    return `Error: Conexion reiniciada por el router. Posible sobrecarga o reinicio del servicio API.`;
   }
   return `Error de conexion: ${msg}`;
 }
@@ -56,6 +65,8 @@ export async function testConnection(
 
     // Cache version for chat engine
     setCachedRouterVersion(version);
+
+    console.log(`[MikroTik] Conexion establecida con exito: ${identity} | RouterOS ${version} | Board: ${board}`);
 
     await conn.close();
     return { success: true, identity, version, board };
@@ -104,6 +115,7 @@ export async function fetchRealRouterData(): Promise<{
   try {
     conn = createConnection(config);
     await conn.connect();
+    console.log(`[MikroTik] Conexion establecida con ${config.ip}:${config.port}`);
 
     // Fetch resources
     const resources = await conn.write("/system/resource/print");
@@ -118,9 +130,13 @@ export async function fetchRealRouterData(): Promise<{
     const identity = await conn.write("/system/identity/print");
     const boardName = identity?.[0]?.name || "MikroTik";
 
+    console.log(`[MikroTik] Router: ${boardName} | RouterOS ${versionStr} | v${routerVersion}`);
+
     // Fetch interfaces - works the same on v6 and v7
     const ifaceData = await conn.write("/interface/print");
     const ifaceList = ifaceData || [];
+
+    console.log(`[MikroTik] Interfaces encontradas: ${ifaceList.length} | Activas: ${ifaceList.filter((i: Record<string, string>) => i.running === "true").length}`);
 
     // Get real-time rates via monitor-traffic for active interfaces
     const ratesMap: Record<string, { rxRate: number; txRate: number }> = {};
@@ -132,13 +148,27 @@ export async function fetchRealRouterData(): Promise<{
             "=once=",
           ]);
           if (mon && mon[0]) {
-            ratesMap[iface.name] = {
-              rxRate: parseInt(mon[0]["rx-bits-per-second"] || "0", 10),
-              txRate: parseInt(mon[0]["tx-bits-per-second"] || "0", 10),
-            };
+            const rxRate = parseInt(mon[0]["rx-bits-per-second"] || "0", 10);
+            const txRate = parseInt(mon[0]["tx-bits-per-second"] || "0", 10);
+            ratesMap[iface.name] = { rxRate, txRate };
+            console.log(`[MikroTik] ${iface.name}: RX ${(rxRate / 1000000).toFixed(2)} Mbps / TX ${(txRate / 1000000).toFixed(2)} Mbps`);
           }
-        } catch {
-          // monitor-traffic may fail for some interface types
+        } catch (monErr) {
+          const errMsg = monErr instanceof Error ? monErr.message : String(monErr);
+          console.log(`[MikroTik] monitor-traffic fallo para ${iface.name}: ${errMsg}`);
+          // Fallback: try /interface print stats for cumulative bytes
+          try {
+            const statsData = await conn.write("/interface/print", ["=.proplist=name,rx-bits-per-second,tx-bits-per-second", `=numbers=${iface[".id"]}`]);
+            if (statsData && statsData[0]) {
+              ratesMap[iface.name] = {
+                rxRate: parseInt(statsData[0]["rx-bits-per-second"] || "0", 10),
+                txRate: parseInt(statsData[0]["tx-bits-per-second"] || "0", 10),
+              };
+              console.log(`[MikroTik] ${iface.name} (fallback): rates obtenidos de /interface/print`);
+            }
+          } catch {
+            console.log(`[MikroTik] ${iface.name}: no se pudieron obtener rates (sin permisos o interfaz no soportada)`);
+          }
         }
       }
     }
@@ -211,9 +241,14 @@ export async function fetchRealRouterData(): Promise<{
     await conn.close();
     markMikroTikConnected();
 
+    const activeCount = interfaces.filter((i: { status: string }) => i.status === "up").length;
+    console.log(`[MikroTik] Datos obtenidos: ${interfaces.length} interfaces (${activeCount} activas), CPU: ${health.cpuLoad}%, Memoria: ${((health.totalMemory - health.freeMemory) / health.totalMemory * 100).toFixed(0)}%`);
+
     return { interfaces, health, bgpSessions, ospfNeighbors };
   } catch (err) {
     if (conn) { try { conn.close(); } catch { /* */ } }
-    return { interfaces: [], health: null, bgpSessions: [], ospfNeighbors: [], error: parseError(err) };
+    const errorMsg = parseError(err);
+    console.log(`[MikroTik] fetchRealRouterData fallo: ${errorMsg}`);
+    return { interfaces: [], health: null, bgpSessions: [], ospfNeighbors: [], error: errorMsg };
   }
 }
