@@ -93,6 +93,31 @@ export default function SettingsPage() {
     }
   };
 
+  const handleTestSaved = async () => {
+    setStatus("testing");
+    setStatusMsg("Probando conexion guardada...");
+
+    try {
+      const res = await fetch("/api/mikrotik", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "test-saved" }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setStatus("success");
+        setStatusMsg(data.message || "Conexion exitosa con la configuracion guardada.");
+      } else {
+        setStatus("error");
+        setStatusMsg(data.error || "Fallo la conexion con la configuracion guardada.");
+      }
+    } catch {
+      setStatus("error");
+      setStatusMsg("Error de red.");
+    }
+  };
+
   if (!loaded) {
     return (
       <div className="p-6 max-w-2xl mx-auto">
@@ -201,13 +226,20 @@ export default function SettingsPage() {
           </div>
         )}
 
-        <div className="flex gap-3 pt-2">
+        <div className="flex gap-3 pt-2 flex-wrap">
           <button
             onClick={handleTest}
             disabled={status === "testing" || status === "saving"}
             className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
           >
             Probar Conexion
+          </button>
+          <button
+            onClick={handleTestSaved}
+            disabled={status === "testing" || status === "saving"}
+            className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            Probar Config Guardada
           </button>
           <button
             onClick={handleSave}

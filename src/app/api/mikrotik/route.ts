@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { testConnection } from "@/lib/mikrotik/connection-server";
+import { testConnection, executeCommand } from "@/lib/mikrotik/connection-server";
 import { validateConfig } from "@/lib/mikrotik/connection";
 import { saveMikroTikConfig, loadMikroTikConfig } from "@/lib/mikrotik/db";
 
 export async function POST(request: Request) {
   try {
-    const { action, config } = await request.json();
+    const { action, config, command } = await request.json();
 
     if (action === "save" && config) {
       const errors = validateConfig(config);
@@ -27,18 +27,42 @@ export async function POST(request: Request) {
       if (result.success) {
         return NextResponse.json({
           success: true,
-          message: `Conexion exitosa. Router: ${result.identity}`,
+          message: `Conexion exitosa. Router: ${result.identity} | RouterOS: ${result.version} | Board: ${result.board}`,
+          identity: result.identity,
+          version: result.version,
+          board: result.board,
         });
       }
       return NextResponse.json({
         success: false,
-        error: result.error || "No se pudo conectar al router",
+        error: result.error,
       });
     }
 
+    if (action === "execute" && command) {
+      const result = await executeCommand(command);
+      return NextResponse.json(result);
+    }
+
+    if (action === "test-saved") {
+      const savedConfig = loadMikroTikConfig();
+      if (!savedConfig) {
+        return NextResponse.json({ success: false, error: "No hay configuracion guardada" });
+      }
+      const result = await testConnection(savedConfig);
+      if (result.success) {
+        return NextResponse.json({
+          success: true,
+          message: `Conexion exitosa. Router: ${result.identity} | RouterOS: ${result.version}`,
+        });
+      }
+      return NextResponse.json({ success: false, error: result.error });
+    }
+
     return NextResponse.json({ error: "Accion invalida" }, { status: 400 });
-  } catch {
-    return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Error interno del servidor";
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 
