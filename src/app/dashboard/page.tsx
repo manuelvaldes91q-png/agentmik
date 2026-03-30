@@ -374,7 +374,6 @@ export default function DashboardPage() {
                   <TrafficChart
                     key={iface.name}
                     label={`${iface.name}${iface.comment ? ` (${iface.comment})` : ""}`}
-                    maxRate={60}
                     rxRate={iface.rxRate}
                     txRate={iface.txRate}
                     isReal={isRealData}

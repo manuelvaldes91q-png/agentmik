@@ -1,49 +1,47 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 interface TrafficPoint { time: number; rx: number; tx: number; }
 
-export function TrafficChart({ label, maxRate, rxRate, txRate, isReal }: { label: string; maxRate: number; rxRate?: number; txRate?: number; isReal?: boolean }) {
+function formatRate(bps: number): string {
+  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
+  if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)} Kbps`;
+  return `${bps} bps`;
+}
+
+export function TrafficChart({ label, rxRate, txRate, isReal }: { label: string; rxRate?: number; txRate?: number; isReal?: boolean }) {
   const [data, setData] = useState<TrafficPoint[]>([]);
-  const rxRef = useRef(rxRate ?? 0);
-  const txRef = useRef(txRate ?? 0);
-
-  // Update refs when props change
-  useEffect(() => {
-    if (rxRate !== undefined) rxRef.current = rxRate;
-    if (txRate !== undefined) txRef.current = txRate;
-  }, [rxRate, txRate]);
+  const prevRx = useRef<number | undefined>(undefined);
+  const prevTx = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setData((prev) => {
-        const next = [...prev.slice(-29), {
-          time: Date.now(),
-          rx: isReal ? rxRef.current / 1_000_000 : 20 + Math.random() * 40,
-          tx: isReal ? txRef.current / 1_000_000 : 10 + Math.random() * 25,
-        }];
-        return next;
-      });
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [isReal]);
+    const rx = isReal ? (rxRate ?? 0) : 0;
+    const tx = isReal ? (txRate ?? 0) : 0;
+
+    if (prevRx.current !== rx || prevTx.current !== tx) {
+      prevRx.current = rx;
+      prevTx.current = tx;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setData((prev) => [...prev.slice(-29), { time: Date.now(), rx, tx }]);
+    }
+  }, [rxRate, txRate, isReal]);
 
   const height = 80;
   const width = 300;
 
   const maxVal = data.length > 0
-    ? Math.max(maxRate, ...data.map((p) => Math.max(p.rx, p.tx))) * 1.1
-    : maxRate;
+    ? Math.max(100_000, ...data.map((p) => Math.max(p.rx, p.tx))) * 1.2
+    : 100_000;
 
   const rxPath = data.map((p, i) => {
-    const x = (i / (data.length - 1)) * width;
+    const x = (i / Math.max(data.length - 1, 1)) * width;
     const y = height - (p.rx / maxVal) * height;
     return `${i === 0 ? "M" : "L"} ${x} ${y}`;
   }).join(" ");
 
   const txPath = data.map((p, i) => {
-    const x = (i / (data.length - 1)) * width;
+    const x = (i / Math.max(data.length - 1, 1)) * width;
     const y = height - (p.tx / maxVal) * height;
     return `${i === 0 ? "M" : "L"} ${x} ${y}`;
   }).join(" ");
@@ -61,11 +59,11 @@ export function TrafficChart({ label, maxRate, rxRate, txRate, isReal }: { label
         <div className="flex items-center gap-3 text-xs">
           <span className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-cyan-500" />
-            <span className="text-slate-400">RX {currentRx.toFixed(1)} Mbps</span>
+            <span className="text-slate-400">RX {formatRate(currentRx)}</span>
           </span>
           <span className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-violet-500" />
-            <span className="text-slate-400">TX {currentTx.toFixed(1)} Mbps</span>
+            <span className="text-slate-400">TX {formatRate(currentTx)}</span>
           </span>
         </div>
       </div>
@@ -80,6 +78,8 @@ export function TrafficChart({ label, maxRate, rxRate, txRate, isReal }: { label
             <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0" />
           </linearGradient>
         </defs>
+        <line x1="0" y1={height / 2} x2={width} y2={height / 2} stroke="#334155" strokeWidth="0.5" strokeDasharray="4" />
+        <line x1="0" y1={height} x2={width} y2={height} stroke="#334155" strokeWidth="0.5" />
         {data.length > 1 && (
           <>
             <path d={rxFill} fill={`url(#rx-grad-${label})`} />
@@ -89,6 +89,11 @@ export function TrafficChart({ label, maxRate, rxRate, txRate, isReal }: { label
           </>
         )}
       </svg>
+      <div className="flex justify-between text-[10px] text-slate-600 mt-0.5">
+        <span>-30s</span>
+        <span>-15s</span>
+        <span>ahora</span>
+      </div>
     </div>
   );
 }

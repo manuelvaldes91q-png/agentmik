@@ -20,59 +20,43 @@ function createConnection(config: MikroTikConfig): RouterOSAPI {
   });
 }
 
-// Cache de contadores de bytes para calcular tasas
+// Cache de contadores para calcular tasas suavizadas
 interface ByteCounter {
   rxBytes: number;
   txBytes: number;
   timestamp: number;
+  rxRateSmooth: number;
+  txRateSmooth: number;
 }
 const byteCache: Record<string, ByteCounter> = {};
+const SMOOTHING = 0.3; // 0 = max suavizado, 1 = sin suavizar
 
 function parseError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
-
   console.log(`[MikroTik] Error: ${msg}`);
-
-  if (msg.includes("ECONNREFUSED") || msg.includes("connect")) {
-    return `Error: Conexion rechazada (puerto cerrado o API deshabilitada). Habilita: /ip service enable api`;
-  }
-  if (msg.includes("ETIMEDOUT") || msg.includes("timeout")) {
-    return `Error: Timeout de conexion. Verifica IP y puerto 8728.`;
-  }
-  if (msg.includes("login") || msg.includes("auth") || msg.includes("password") || msg.includes("invalid")) {
-    return `Error: Autenticacion fallida. Verifica usuario/contrasena.`;
-  }
-  if (msg.includes("CERT") || msg.includes("certificate") || msg.includes("SSL")) {
-    return `Error: SSL/TLS invalido. Usa puerto 8728 sin SSL.`;
-  }
-  if (msg.includes("EHOSTUNREACH") || msg.includes("ENETUNREACH")) {
-    return `Error: Host o red inalcanzable.`;
-  }
-  if (msg.includes("ECONNRESET")) {
-    return `Error: Conexion reiniciada por el router.`;
-  }
-  return `Error de conexion: ${msg}`;
+  if (msg.includes("ECONNREFUSED") || msg.includes("connect")) return `Error: Conexion rechazada. Habilita API: /ip service enable api`;
+  if (msg.includes("ETIMEDOUT") || msg.includes("timeout")) return `Error: Timeout. Verifica IP y puerto 8728.`;
+  if (msg.includes("login") || msg.includes("auth") || msg.includes("password")) return `Error: Autenticacion fallida.`;
+  if (msg.includes("CERT") || msg.includes("certificate") || msg.includes("SSL")) return `Error: SSL/TLS. Usa puerto 8728 sin SSL.`;
+  if (msg.includes("EHOSTUNREACH") || msg.includes("ENETUNREACH")) return `Error: Host inalcanzable.`;
+  if (msg.includes("ECONNRESET")) return `Error: Conexion reiniciada.`;
+  return `Error: ${msg}`;
 }
 
 export async function testConnection(
   config: MikroTikConfig
 ): Promise<{ success: boolean; error?: string; identity?: string; version?: string; board?: string }> {
   let conn: RouterOSAPI | null = null;
-
   try {
     conn = createConnection(config);
     await conn.connect();
-
     const identityRes = await conn.write("/system/identity/print");
     const identity = identityRes?.[0]?.name || "MikroTik";
-
     const resourceRes = await conn.write("/system/resource/print");
     const version = resourceRes?.[0]?.version || "unknown";
     const board = resourceRes?.[0]?.["board-name"] || "unknown";
-
     setCachedRouterVersion(version);
-    console.log(`[MikroTik] Conexion exitosa: ${identity} | RouterOS ${version} | Board: ${board}`);
-
+    console.log(`[MikroTik] Conexion exitosa: ${identity} | RouterOS ${version} | ${board}`);
     await conn.close();
     return { success: true, identity, version, board };
   } catch (err) {
@@ -85,12 +69,8 @@ export async function executeCommand(
   command: string
 ): Promise<{ success: boolean; result?: unknown[]; error?: string }> {
   const config = loadMikroTikConfig();
-  if (!config) {
-    return { success: false, error: "No hay configuracion de MikroTik guardada" };
-  }
-
+  if (!config) return { success: false, error: "No hay configuracion guardada" };
   let conn: RouterOSAPI | null = null;
-
   try {
     conn = createConnection(config);
     await conn.connect();
@@ -120,30 +100,23 @@ export async function fetchRealRouterData(): Promise<{
   try {
     conn = createConnection(config);
     await conn.connect();
-    console.log(`[MikroTik] Conectado a ${config.ip}:${config.port}`);
 
-    // Fetch resources
+    // System resources
     const resources = await conn.write("/system/resource/print");
     const res = resources[0] || {};
     const versionStr: string = res.version || "7.0";
     const routerVersion = detectVersion(versionStr);
-
     setCachedRouterVersion(versionStr);
 
-    // Fetch identity
+    // Identity
     const identity = await conn.write("/system/identity/print");
     const boardName = identity?.[0]?.name || "MikroTik";
 
-    console.log(`[MikroTik] ${boardName} | RouterOS ${versionStr} | v${routerVersion}`);
-
-    // Fetch interfaces with byte counters (works on v6 and v7)
+    // Interfaces
     const ifaceData = await conn.write("/interface/print");
     const ifaceList = ifaceData || [];
 
-    const activeCount = ifaceList.filter((i: Record<string, string>) => i.running === "true").length;
-    console.log(`[MikroTik] Interfaces: ${ifaceList.length} total, ${activeCount} activas`);
-
-    // Calculate rates from byte counter deltas
+    // Calculate smoothed rates from byte counter deltas
     const interfaces = ifaceList.map((i: Record<string, string>) => {
       const name = i.name;
       const rxBytes = parseInt(i["rx-byte"] || "0", 10);
@@ -155,24 +128,31 @@ export async function fetchRealRouterData(): Promise<{
 
       if (isRunning && byteCache[name]) {
         const prev = byteCache[name];
-        const timeDeltaSec = (now - prev.timestamp) / 1000;
+        const dt = (now - prev.timestamp) / 1000;
 
-        if (timeDeltaSec > 0 && timeDeltaSec < 30) {
-          // Only calculate if delta is reasonable (< 30s)
+        if (dt >= 1 && dt < 60) {
           const rxDelta = rxBytes - prev.rxBytes;
           const txDelta = txBytes - prev.txBytes;
 
-          if (rxDelta >= 0) rxRate = Math.round((rxDelta * 8) / timeDeltaSec); // bits per second
-          if (txDelta >= 0) txRate = Math.round((txDelta * 8) / timeDeltaSec);
+          if (rxDelta >= 0 && txDelta >= 0) {
+            const instantRx = (rxDelta * 8) / dt;
+            const instantTx = (txDelta * 8) / dt;
+
+            // Exponential moving average - smooths out spikes
+            rxRate = Math.round(prev.rxRateSmooth + SMOOTHING * (instantRx - prev.rxRateSmooth));
+            txRate = Math.round(prev.txRateSmooth + SMOOTHING * (instantTx - prev.txRateSmooth));
+          }
         }
       }
 
       // Update cache
-      byteCache[name] = { rxBytes, txBytes, timestamp: now };
-
-      if (isRunning && (rxRate > 0 || txRate > 0)) {
-        console.log(`[MikroTik] ${name}: RX ${(rxRate / 1000000).toFixed(2)} Mbps / TX ${(txRate / 1000000).toFixed(2)} Mbps`);
-      }
+      byteCache[name] = {
+        rxBytes,
+        txBytes,
+        timestamp: now,
+        rxRateSmooth: rxRate,
+        txRateSmooth: txRate,
+      };
 
       return {
         name,
@@ -186,6 +166,13 @@ export async function fetchRealRouterData(): Promise<{
       };
     });
 
+    // Log only interfaces with traffic
+    for (const iface of interfaces) {
+      if (iface.status === "up" && (iface.rxRate > 0 || iface.txRate > 0)) {
+        console.log(`[MikroTik] ${iface.name}: RX ${formatBps(iface.rxRate)} / TX ${formatBps(iface.txRate)}`);
+      }
+    }
+
     const health = {
       cpuLoad: parseInt(res["cpu-load"] || "0", 10),
       freeMemory: parseInt(res["free-memory"] || "0", 10),
@@ -198,7 +185,7 @@ export async function fetchRealRouterData(): Promise<{
       architecture: res["architecture-name"] || res.architecture || "unknown",
     };
 
-    // BGP sessions - v6 vs v7
+    // BGP - v6 vs v7
     let bgpSessions: unknown[] = [];
     try {
       if (routerVersion === 6) {
@@ -224,7 +211,7 @@ export async function fetchRealRouterData(): Promise<{
       }
     } catch { /* BGP not configured */ }
 
-    // OSPF neighbors - same for v6 and v7
+    // OSPF
     let ospfNeighbors: unknown[] = [];
     try {
       const ospfData = await conn.write("/routing/ospf/neighbor/print");
@@ -240,7 +227,6 @@ export async function fetchRealRouterData(): Promise<{
     await conn.close();
     markMikroTikConnected();
 
-    console.log(`[MikroTik] Datos OK: CPU ${health.cpuLoad}%, ${activeCount} interfaces activas`);
     return { interfaces, health, bgpSessions, ospfNeighbors };
   } catch (err) {
     if (conn) { try { conn.close(); } catch { /* */ } }
@@ -248,4 +234,11 @@ export async function fetchRealRouterData(): Promise<{
     console.log(`[MikroTik] fetchRealRouterData fallo: ${errorMsg}`);
     return { interfaces: [], health: null, bgpSessions: [], ospfNeighbors: [], error: errorMsg };
   }
+}
+
+// Format bits per second like Winbox does: "12.5 Mbps", "1.2 kbps", "500 bps"
+function formatBps(bps: number): string {
+  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
+  if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)} Kbps`;
+  return `${bps} bps`;
 }
