@@ -64,3 +64,4 @@ All text is in Spanish:
 | 2026-03-30 | Comprehensive v6 KB: interfaces, DHCP, DNS, PPPoE, traffic monitoring, queues, firewall, VLAN, hotspot, diagnostics |
 | 2026-03-30 | Bilingual v6/v7 expert: version detection from router, RSC migration hints, legacy doc crawler, cached version for chat engine |
 | 2026-03-30 | Dashboard 5s polling, server debug logs for all MikroTik operations, specific error messages (auth/port/timeout) |
+| 2026-03-30 | Cleaned all simulated data: monitoring uses real data only, log ingestion disabled when router configured, flush-cache API endpoint |
