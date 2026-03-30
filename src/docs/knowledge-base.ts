@@ -302,6 +302,75 @@ add action=accept chain=input dst-port=179 protocol=tcp
 add action=log chain=input log-prefix="BGP-DEBUG" dst-port=179 protocol=tcp`,
     tags: ["bgp", "troubleshooting", "routing", "v7"],
   },
+  {
+    id: "v6-fw-001",
+    category: "Firewall",
+    topic: "Firewall Basico (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "En RouterOS v6, el firewall usa la misma estructura que v7 pero sin raw rules avanzadas. La regla base es aceptar conexiones establecidas/relacionadas primero, luego drop invalid. En v6 no existe /ip firewall raw con la misma flexibilidad de v7. Usa connection-rate y connection-limit para proteccion basica contra DDoS.",
+    codeExample: `/ip firewall filter
+add action=accept chain=input connection-state=established,related
+add action=drop chain=input connection-state=invalid
+add action=accept chain=input protocol=icmp
+add action=accept chain=input dst-port=22 protocol=tcp src-address-list=allowed
+add action=drop chain=input in-interface=ether1
+add action=add-src-to-address-list address-list=blocked address-list-timeout=1d chain=input connection-limit=100,32 protocol=tcp`,
+    tags: ["firewall", "security", "v6", "input-chain"],
+  },
+  {
+    id: "v6-bgp-001",
+    category: "Routing",
+    topic: "BGP en RouterOS v6",
+    routerOsVersion: "6.x",
+    content:
+      "En RouterOS v6, BGP se configura con /routing bgp peer. La diferencia principal con v7 es que v6 usa 'peer' en lugar de 'session'. Para ver sesiones activas usa /routing bgp peer print donde state=established. Los filtros de rutas se hacen con /routing filter chain.",
+    codeExample: `/routing bgp peer add name=ISP-Primary remote-address=203.0.113.1 remote-as=64512 disabled=no
+/routing bgp peer print where state=established
+/routing bgp advertisements print
+/ip firewall filter add action=accept chain=input dst-port=179 protocol=tcp`,
+    tags: ["bgp", "routing", "v6", "peer"],
+  },
+  {
+    id: "v6-nat-001",
+    category: "Firewall",
+    topic: "NAT y Masquerade (RouterOS v6)",
+    routerOsVersion: "6.x",
+    content:
+      "En RouterOS v6, NAT se configura igual que en v7 con /ip firewall nat. Para enrutadores con IP publica dinamica, usa action=masquerade en lugar de action=src-nat. Masquerade es mas lento pero funciona con IPs dinamicas. Para rendimiento, usa src-nat cuando tengas IP fija.",
+    codeExample: `/ip firewall nat
+add action=masquerade chain=srcnat out-interface=ether1
+# Para IP fija (mejor rendimiento):
+/ip firewall nat
+add action=src-nat chain=srcnat out-interface=ether1 to-addresses=203.0.113.10`,
+    tags: ["nat", "masquerade", "firewall", "v6"],
+  },
+  {
+    id: "v6-ospf-001",
+    category: "Routing",
+    topic: "OSPF en RouterOS v6",
+    routerOsVersion: "6.x",
+    content:
+      "OSPF en v6 se configura con /routing ospf instance y /routing ospf area. Los comandos son similares a v7 pero con sintaxis diferente. Para ver vecinos: /routing ospf neighbor print. Usa /routing ospf interface print para verificar que las interfaces estan en la area correcta.",
+    codeExample: `/routing ospf instance set [find default=yes] router-id=10.0.0.1
+/routing ospf area set [find default=yes] area-id=0.0.0.0
+/routing ospf interface add interface=ether2 network-type=broadcast
+/routing ospf neighbor print`,
+    tags: ["ospf", "routing", "v6"],
+  },
+  {
+    id: "v6-api-001",
+    category: "API",
+    topic: "Habilitar API en RouterOS v6",
+    routerOsVersion: "6.x",
+    content:
+      "Para habilitar la API en RouterOS v6, usa /ip service enable api. El puerto por defecto es 8728 (sin SSL) y 8729 (con SSL). En v6, asegurate de crear un usuario de solo lectura para monitoreo y restringir el acceso por IP. La API de v6 y v7 son compatibles para comandos basicos como /interface/print, /system/resource/print, y /system/identity/print.",
+    codeExample: `/ip service enable api
+/ip service set api address=IP_DEL_SERVIDOR
+/user add name=monitor group=read password=CONTRASENA_FUERTE
+/user group set read policy=api,read,test`,
+    tags: ["api", "configuration", "v6", "security"],
+  },
 ];
 
 export function searchKnowledge(query: string): KnowledgeEntry[] {
