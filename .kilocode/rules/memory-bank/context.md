@@ -57,3 +57,4 @@ All text is in Spanish:
 | 2026-03-30 | v3.0 Security: Real-time log ingestion, attack pattern recognition |
 | 2026-03-30 | v3.1: Full Spanish localization, real MikroTik connection with node-routeros, credential persistence |
 | 2026-03-30 | Added delete MikroTik config button to remove saved router credentials |
+| 2026-03-30 | Dashboard now fetches real router data when configured, simulated data only as preview |
