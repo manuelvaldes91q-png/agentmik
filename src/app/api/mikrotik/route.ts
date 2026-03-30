@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { testConnection, executeCommand } from "@/lib/mikrotik/connection-server";
+import { testConnection, executeCommand, fetchRealRouterData } from "@/lib/mikrotik/connection-server";
 import { validateConfig } from "@/lib/mikrotik/connection";
 import { saveMikroTikConfig, loadMikroTikConfig, deleteMikroTikConfig } from "@/lib/mikrotik/db";
 
@@ -47,6 +47,14 @@ export async function POST(request: Request) {
     if (action === "delete") {
       deleteMikroTikConfig();
       return NextResponse.json({ success: true, message: "Configuracion eliminada" });
+    }
+
+    if (action === "fetch-data") {
+      const routerData = await fetchRealRouterData();
+      if (routerData) {
+        return NextResponse.json({ success: true, ...routerData });
+      }
+      return NextResponse.json({ success: false, error: "No se pudo obtener datos del router" });
     }
 
     if (action === "test-saved") {

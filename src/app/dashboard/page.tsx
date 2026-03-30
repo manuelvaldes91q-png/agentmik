@@ -7,7 +7,7 @@ import { MetricBar } from "@/components/MetricBar";
 import { TrafficChart } from "@/components/TrafficChart";
 import { AlertItem } from "@/components/AlertItem";
 import { SecurityInsights } from "@/components/SecurityInsights";
-import type { BgpSession, OspfNeighbor } from "@/lib/types";
+import type { BgpSession, OspfNeighbor, InterfaceStats, SystemHealth, Alert } from "@/lib/types";
 
 interface SyncStatus {
   syncing: boolean;
@@ -32,8 +32,19 @@ interface PendingAction {
   createdAt: string;
 }
 
+interface DashboardData {
+  interfaces: InterfaceStats[];
+  health: SystemHealth;
+  bgpSessions: BgpSession[];
+  ospfNeighbors: OspfNeighbor[];
+  alerts: Alert[];
+}
+
 export default function DashboardPage() {
-  const [data, setData] = useState<ReturnType<typeof generateSimulatedData> | null>(null);
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [isRealData, setIsRealData] = useState(false);
+  const [isConfigured, setIsConfigured] = useState<boolean | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const mountedRef = useRef(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({
     syncing: false,
@@ -50,12 +61,62 @@ export default function DashboardPage() {
   });
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
 
+  const fetchRealData = async () => {
+    try {
+      const res = await fetch("/api/mikrotik", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "fetch-data" }),
+      });
+      const json = await res.json();
+
+      if (json.success) {
+        setData({
+          interfaces: json.interfaces || [],
+          health: json.health,
+          bgpSessions: json.bgpSessions || [],
+          ospfNeighbors: json.ospfNeighbors || [],
+          alerts: [],
+        });
+        setIsRealData(true);
+        setFetchError(null);
+      } else {
+        setFetchError(json.error || "Error al obtener datos del router");
+      }
+    } catch {
+      setFetchError("No se pudo conectar al router");
+    }
+  };
+
   useEffect(() => {
     mountedRef.current = true;
-    const tick = () => setData(generateSimulatedData());
-    tick();
-    const interval = setInterval(tick, 10000);
-    return () => clearInterval(interval);
+
+    // Check if MikroTik is configured
+    fetch("/api/mikrotik")
+      .then((res) => res.json())
+      .then((configData) => {
+        if (configData.status === "configured") {
+          setIsConfigured(true);
+          // Fetch real data immediately and every 10s
+          fetchRealData();
+          const interval = setInterval(fetchRealData, 10000);
+          return () => clearInterval(interval);
+        } else {
+          setIsConfigured(false);
+          // Use simulated data as preview
+          const tick = () => setData(generateSimulatedData());
+          tick();
+          const interval = setInterval(tick, 10000);
+          return () => clearInterval(interval);
+        }
+      })
+      .catch(() => {
+        setIsConfigured(false);
+        const tick = () => setData(generateSimulatedData());
+        tick();
+        const interval = setInterval(tick, 10000);
+        return () => clearInterval(interval);
+      });
   }, []);
 
   useEffect(() => {
@@ -170,16 +231,19 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-4">
-          {/* Monitoring indicator */}
+          {/* Data source indicator */}
           <div className="flex items-center gap-2 text-xs">
-            <div className={`w-2 h-2 rounded-full ${monitoring.active ? "bg-emerald-500" : "bg-amber-500"} animate-pulse`} />
-            <span className={monitoring.active ? "text-emerald-400" : "text-amber-400"}>
-              {monitoring.active ? "Monitoreo activo (60s)" : "Monitoreo inactivo"}
+            <div className={`w-2 h-2 rounded-full ${isRealData ? "bg-emerald-500" : "bg-amber-500"} animate-pulse`} />
+            <span className={isRealData ? "text-emerald-400" : "text-amber-400"}>
+              {isRealData ? "Datos reales del router" : "Datos simulados (preview)"}
             </span>
           </div>
+          {/* Monitoring indicator */}
           <div className="flex items-center gap-2 text-xs">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-emerald-400">En vivo</span>
+            <div className={`w-2 h-2 rounded-full ${monitoring.active ? "bg-emerald-500" : "bg-slate-500"} animate-pulse`} />
+            <span className={monitoring.active ? "text-emerald-400" : "text-slate-400"}>
+              {monitoring.active ? "Monitoreo activo (60s)" : "Monitoreo inactivo"}
+            </span>
           </div>
           <button
             onClick={handleSyncDocs}
@@ -209,6 +273,22 @@ export default function DashboardPage() {
       {syncStatus.error && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm text-red-400">
           {syncStatus.error}
+        </div>
+      )}
+
+      {fetchError && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm text-red-400 flex items-center justify-between">
+          <span>Error de conexion al router: {fetchError}</span>
+          <button onClick={fetchRealData} className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white rounded text-xs">
+            Reintentar
+          </button>
+        </div>
+      )}
+
+      {isConfigured === false && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-sm text-amber-400">
+          No hay un MikroTik configurado. Los datos mostrados son simulados.{" "}
+          <a href="/settings" className="underline hover:text-amber-300">Configurar conexion</a>
         </div>
       )}
 
