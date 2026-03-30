@@ -151,9 +151,9 @@ export default function DashboardPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-slate-100">Network Dashboard</h1>
+          <h1 className="text-xl font-bold text-slate-100">Panel de Control</h1>
           <p className="text-sm text-slate-500 mt-1">
-            {data.health.boardName} &middot; RouterOS {data.health.routerOsVersion} &middot; Uptime: {data.health.uptime}
+            {data.health.boardName} &middot; RouterOS {data.health.routerOsVersion} &middot; Activo: {data.health.uptime}
           </p>
         </div>
         <div className="flex items-center gap-4">
@@ -166,7 +166,7 @@ export default function DashboardPage() {
           </div>
           <div className="flex items-center gap-2 text-xs">
             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-emerald-400">Live</span>
+            <span className="text-emerald-400">En vivo</span>
           </div>
           <button
             onClick={handleSyncDocs}

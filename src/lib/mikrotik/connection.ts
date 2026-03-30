@@ -1,32 +1,23 @@
 import type { MikroTikConfig, InterfaceStats, SystemHealth, BgpSession, OspfNeighbor, Alert } from "@/lib/types";
 
-const storedConfig: Map<string, MikroTikConfig> = new Map();
-
-export function saveConfig(key: string, config: MikroTikConfig): void {
-  storedConfig.set(key, config);
-}
-
-export function getConfig(key: string): MikroTikConfig | undefined {
-  return storedConfig.get(key);
-}
-
 export function validateConfig(config: MikroTikConfig): string[] {
   const errors: string[] = [];
-  if (!config.ip || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(config.ip)) {
-    errors.push("Invalid IP address format");
+  if (!config.ip || config.ip.length < 1) {
+    errors.push("La IP o hostname es requerido");
   }
   if (config.port < 1 || config.port > 65535) {
-    errors.push("Port must be between 1 and 65535");
+    errors.push("El puerto debe estar entre 1 y 65535");
   }
   if (!config.username || config.username.length < 1) {
-    errors.push("Username is required");
+    errors.push("El usuario es requerido");
   }
   if (!config.password || config.password.length < 1) {
-    errors.push("Password is required");
+    errors.push("La contrasena es requerida");
   }
   return errors;
 }
 
+// Simulated data (used when no real connection or as fallback)
 export function generateSimulatedData(): {
   interfaces: InterfaceStats[];
   health: SystemHealth;
@@ -46,11 +37,11 @@ export function generateSimulatedData(): {
   ];
 
   const health: SystemHealth = {
-    cpuLoad: 23,
+    cpuLoad: 23 + Math.floor(Math.random() * 10),
     freeMemory: 148_000_000,
     totalMemory: 256_000_000,
     uptime: "14d07h32m",
-    temperature: 48,
+    temperature: 48 + Math.floor(Math.random() * 5),
     voltage: 12.1,
     boardName: "CCR2004-1G-12S+2XS",
     routerOsVersion: "7.16.2",
@@ -69,11 +60,11 @@ export function generateSimulatedData(): {
   ];
 
   const alerts: Alert[] = [
-    { id: "a1", type: "info", message: "BGP session with IX-Peer re-established after 2s flap", timestamp: new Date(now - 3_600_000), source: "BGP" },
-    { id: "a2", type: "warning", message: "CPU load spike to 78% detected (resolved)", timestamp: new Date(now - 7_200_000), source: "System" },
-    { id: "a3", type: "info", message: "WireGuard peer reconnected", timestamp: new Date(now - 14_400_000), source: "VPN" },
-    { id: "a4", type: "warning", message: "ether5 link flapped (3 times in 10 minutes)", timestamp: new Date(now - 86_400_000), source: "Interface" },
-    { id: "a5", type: "critical", message: "DNS resolution failure for 30 seconds", timestamp: new Date(now - 172_800_000), source: "DNS" },
+    { id: "a1", type: "info", message: "Sesion BGP con IX-Peer restablecida tras flap de 2s", timestamp: new Date(now - 3_600_000), source: "BGP" },
+    { id: "a2", type: "warning", message: "Pico de CPU al 78% detectado (resuelto)", timestamp: new Date(now - 7_200_000), source: "Sistema" },
+    { id: "a3", type: "info", message: "Peer WireGuard reconectado", timestamp: new Date(now - 14_400_000), source: "VPN" },
+    { id: "a4", type: "warning", message: "ether5 link flapped (3 veces en 10 minutos)", timestamp: new Date(now - 86_400_000), source: "Interfaz" },
+    { id: "a5", type: "critical", message: "Fallo de resolucion DNS por 30 segundos", timestamp: new Date(now - 172_800_000), source: "DNS" },
   ];
 
   return { interfaces, health, bgpSessions, ospfNeighbors, alerts };

@@ -1,13 +1,20 @@
 import { NextResponse } from "next/server";
-import { saveConfig, validateConfig } from "@/lib/mikrotik/connection";
+import { testConnection } from "@/lib/mikrotik/connection-server";
+import { validateConfig } from "@/lib/mikrotik/connection";
+import { saveMikroTikConfig, loadMikroTikConfig } from "@/lib/mikrotik/db";
 
 export async function POST(request: Request) {
   try {
     const { action, config } = await request.json();
 
     if (action === "save" && config) {
-      saveConfig("default", config);
-      return NextResponse.json({ success: true, message: "Configuration saved" });
+      const errors = validateConfig(config);
+      if (errors.length > 0) {
+        return NextResponse.json({ success: false, error: errors.join(", ") });
+      }
+
+      saveMikroTikConfig(config);
+      return NextResponse.json({ success: true, message: "Configuracion guardada" });
     }
 
     if (action === "test" && config) {
@@ -16,22 +23,44 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: false, error: errors.join(", ") });
       }
 
+      const result = await testConnection(config);
+      if (result.success) {
+        return NextResponse.json({
+          success: true,
+          message: `Conexion exitosa. Router: ${result.identity}`,
+        });
+      }
       return NextResponse.json({
         success: false,
-        error: "Cannot connect to real MikroTik in this environment. Configuration is valid - configure a real router connection in production.",
+        error: result.error || "No se pudo conectar al router",
       });
     }
 
-    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+    return NextResponse.json({ error: "Accion invalida" }, { status: 400 });
   } catch {
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 }
 
 export async function GET() {
-  return NextResponse.json({
-    status: "ready",
-    message: "MikroTik API proxy is running",
-    note: "Configure connection in /settings to connect to a real router",
-  });
+  try {
+    const config = loadMikroTikConfig();
+    if (config) {
+      return NextResponse.json({
+        status: "configured",
+        alias: config.alias,
+        host: config.ip,
+        port: config.port,
+        username: config.username,
+        useSsl: config.useSsl,
+        lastConnected: config.lastConnected,
+      });
+    }
+    return NextResponse.json({
+      status: "not-configured",
+      message: "Configurar conexion en /settings",
+    });
+  } catch {
+    return NextResponse.json({ error: "Error" }, { status: 500 });
+  }
 }

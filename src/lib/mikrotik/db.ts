@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
-import type { Incident, MonitoringSnapshot, ProposedAction, SecurityEvent } from "@/lib/types";
+import type { Incident, MonitoringSnapshot, ProposedAction, SecurityEvent, MikroTikConfig } from "@/lib/types";
 
 let dbInstance: Database.Database | null = null;
 
@@ -96,6 +96,18 @@ function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_sec_events_status ON security_events(status);
     CREATE INDEX IF NOT EXISTS idx_sec_events_ts ON security_events(timestamp);
     CREATE INDEX IF NOT EXISTS idx_sec_events_ip ON security_events(source_ip);
+
+    CREATE TABLE IF NOT EXISTS mikrotik_config (
+      id TEXT PRIMARY KEY DEFAULT 'default',
+      alias TEXT NOT NULL DEFAULT 'MikroTik',
+      host TEXT NOT NULL DEFAULT '',
+      port INTEGER NOT NULL DEFAULT 8728,
+      username TEXT NOT NULL DEFAULT '',
+      password TEXT NOT NULL DEFAULT '',
+      use_ssl INTEGER NOT NULL DEFAULT 0,
+      last_connected TEXT DEFAULT '',
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   return dbInstance;
@@ -535,4 +547,52 @@ export function closeDb(): void {
     dbInstance.close();
     dbInstance = null;
   }
+}
+
+// MikroTik connection config
+export function saveMikroTikConfig(config: MikroTikConfig & { alias?: string }): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR REPLACE INTO mikrotik_config (id, alias, host, port, username, password, use_ssl, updated_at)
+     VALUES ('default', ?, ?, ?, ?, ?, ?, datetime('now'))`
+  ).run(
+    config.alias || "MikroTik",
+    config.ip,
+    config.port,
+    config.username,
+    config.password,
+    config.useSsl ? 1 : 0
+  );
+}
+
+export function loadMikroTikConfig(): (MikroTikConfig & { alias: string; lastConnected: string | null }) | null {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM mikrotik_config WHERE id = 'default'").get() as {
+    alias: string;
+    host: string;
+    port: number;
+    username: string;
+    password: string;
+    use_ssl: number;
+    last_connected: string | null;
+  } | undefined;
+
+  if (!row || !row.host) return null;
+
+  return {
+    ip: row.host,
+    port: row.port,
+    username: row.username,
+    password: row.password,
+    useSsl: row.use_ssl === 1,
+    alias: row.alias,
+    lastConnected: row.last_connected,
+  };
+}
+
+export function markMikroTikConnected(): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE mikrotik_config SET last_connected = datetime('now') WHERE id = 'default'`
+  ).run();
 }
