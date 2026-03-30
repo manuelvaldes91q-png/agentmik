@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { generateSimulatedData, formatRate } from "@/lib/mikrotik/connection";
 import { InterfaceCard } from "@/components/InterfaceCard";
 import { MetricBar } from "@/components/MetricBar";
@@ -33,7 +33,8 @@ interface PendingAction {
 }
 
 export default function DashboardPage() {
-  const [data, setData] = useState(() => generateSimulatedData());
+  const [data, setData] = useState<ReturnType<typeof generateSimulatedData> | null>(null);
+  const mountedRef = useRef(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({
     syncing: false,
     lastSync: null,
@@ -50,9 +51,10 @@ export default function DashboardPage() {
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setData(generateSimulatedData());
-    }, 10000);
+    mountedRef.current = true;
+    const tick = () => setData(generateSimulatedData());
+    tick();
+    const interval = setInterval(tick, 10000);
     return () => clearInterval(interval);
   }, []);
 
@@ -145,7 +147,18 @@ export default function DashboardPage() {
     }
   };
 
-  const memoryUsed = ((data.health.totalMemory - data.health.freeMemory) / data.health.totalMemory) * 100;
+  const memoryUsed = data ? ((data.health.totalMemory - data.health.freeMemory) / data.health.totalMemory) * 100 : 0;
+
+  if (!data) {
+    return (
+      <div className="p-6 flex items-center justify-center h-full">
+        <div className="flex items-center gap-3 text-slate-400">
+          <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm">Cargando panel...</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 space-y-6">

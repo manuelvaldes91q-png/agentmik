@@ -24,7 +24,7 @@ interface Message {
   cotSteps?: CoTStep[];
   proposedAction?: ProposedAction | null;
   references?: string[];
-  timestamp: Date;
+  timestamp: string;
 }
 
 function CodeBlock({ code, language }: { code: string; language: string }) {
@@ -148,7 +148,7 @@ export function ChatInterface() {
     id: "welcome",
     role: "assistant",
     content: "MikroTik Expert Sentinel activo. Soy tu analista de operaciones de red.\n\nPuedo ayudarte con:\n- **Firewall/NAT/Raw** - Diseno y troubleshooting de reglas\n- **BGP/OSPF** - Analisis y optimizacion de rutas\n- **VPN** - Despliegue (WireGuard, IPsec IKEv2)\n- **QoS** - Queue trees y configuracion PCQ\n- **VLAN/Bridge** - Segmentacion de red\n- **Hardening de seguridad** - Respuesta a amenazas\n- **Monitoreo en vivo** - Deteccion de anomalias\n- **Ejecucion de comandos** - Con analisis de seguridad\n\nEjecuto monitoreo continuo en segundo plano. Si detecto una anomalia, te alertare con una solucion propuesta.\n\nCual es la situacion?",
-    timestamp: new Date(),
+    timestamp: "",  // Set after mount to avoid hydration mismatch
   }]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -164,7 +164,7 @@ export function ChatInterface() {
           setMessages((prev) => [...prev, {
             id: `pending-${action.id}`, role: "assistant",
             content: `**Accion pendiente de aprobacion previa**\n\n\`${action.command}\`\n\n${action.explanation}`,
-            proposedAction: action, timestamp: new Date(action.createdAt),
+            proposedAction: action, timestamp: action.createdAt,
           }]);
         }
       }
@@ -173,7 +173,7 @@ export function ChatInterface() {
 
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
-    const userMsg: Message = { id: Date.now().toString(), role: "user", content: input.trim(), timestamp: new Date() };
+    const userMsg: Message = { id: Date.now().toString(), role: "user", content: input.trim(), timestamp: new Date().toISOString() };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsLoading(true);
@@ -184,10 +184,10 @@ export function ChatInterface() {
         id: (Date.now() + 1).toString(), role: "assistant",
         content: data.response || "No pude procesar la solicitud.",
         cotSteps: data.cotSteps || [], proposedAction: data.proposedAction || null,
-        references: data.references || [], timestamp: new Date(),
+        references: data.references || [], timestamp: new Date().toISOString(),
       }]);
     } catch {
-      setMessages((prev) => [...prev, { id: (Date.now() + 1).toString(), role: "assistant", content: "Error de conexion.", timestamp: new Date() }]);
+      setMessages((prev) => [...prev, { id: (Date.now() + 1).toString(), role: "assistant", content: "Error de conexion.", timestamp: new Date().toISOString() }]);
     } finally { setIsLoading(false); }
   };
 
@@ -196,9 +196,9 @@ export function ChatInterface() {
       const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actionId, confirm: approved }) });
       const data = await res.json();
       setMessages((prev) => prev.map((msg) => msg.id === messageId ? { ...msg, proposedAction: msg.proposedAction ? { ...msg.proposedAction, status: approved ? "executed" : "rejected" } : null } : msg));
-      setMessages((prev) => [...prev, { id: (Date.now() + 2).toString(), role: "assistant", content: data.result || (approved ? "Accion ejecutada." : "Accion cancelada."), timestamp: new Date() }]);
+      setMessages((prev) => [...prev, { id: (Date.now() + 2).toString(), role: "assistant", content: data.result || (approved ? "Accion ejecutada." : "Accion cancelada."), timestamp: new Date().toISOString() }]);
     } catch {
-      setMessages((prev) => [...prev, { id: (Date.now() + 2).toString(), role: "assistant", content: "Error al procesar la confirmacion.", timestamp: new Date() }]);
+      setMessages((prev) => [...prev, { id: (Date.now() + 2).toString(), role: "assistant", content: "Error al procesar la confirmacion.", timestamp: new Date().toISOString() }]);
     }
   };
 
@@ -223,7 +223,7 @@ export function ChatInterface() {
                   {msg.proposedAction.status === "executed" ? "Ejecutado" : "Cancelado"}
                 </div>
               )}
-              <p className="text-xs text-slate-500 mt-2">{msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>
+              <p className="text-xs text-slate-500 mt-2">{msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</p>
             </div>
           </div>
         ))}
