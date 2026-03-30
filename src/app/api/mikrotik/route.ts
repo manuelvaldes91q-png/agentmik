@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { testConnection, executeCommand, fetchRealRouterData } from "@/lib/mikrotik/connection-server";
 import { validateConfig } from "@/lib/mikrotik/connection";
-import { saveMikroTikConfig, loadMikroTikConfig, deleteMikroTikConfig } from "@/lib/mikrotik/db";
+import { saveMikroTikConfig, loadMikroTikConfig, deleteMikroTikConfig, clearAllSimulatedData } from "@/lib/mikrotik/db";
 
 export async function POST(request: Request) {
   try {
@@ -55,6 +55,11 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true, interfaces: routerData.interfaces, health: routerData.health, bgpSessions: routerData.bgpSessions, ospfNeighbors: routerData.ospfNeighbors });
       }
       return NextResponse.json({ success: false, error: routerData?.error || "No se pudo obtener datos del router. Verifica la configuracion en /settings" });
+    }
+
+    if (action === "flush-cache") {
+      clearAllSimulatedData();
+      return NextResponse.json({ success: true, message: "Cache limpiada. Todos los datos simulados eliminados." });
     }
 
     if (action === "test-saved") {

@@ -601,3 +601,14 @@ export function deleteMikroTikConfig(): void {
   const db = getDb();
   db.prepare("DELETE FROM mikrotik_config WHERE id = 'default'").run();
 }
+
+export function clearAllSimulatedData(): void {
+  const db = getDb();
+  db.prepare("DELETE FROM monitoring_snapshots").run();
+  db.prepare("DELETE FROM security_events").run();
+  db.prepare("DELETE FROM pending_actions").run();
+  db.prepare("DELETE FROM action_log").run();
+  db.prepare("DELETE FROM incidents").run();
+  db.prepare("DELETE FROM memory_patterns").run();
+  console.log("[DB] Todos los datos simulados eliminados");
+}

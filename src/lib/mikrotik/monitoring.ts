@@ -26,79 +26,48 @@ function generateId(): string {
   return `mon-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function takeSnapshot(): MonitoringSnapshot {
-  // Use simulated data as fallback
-  const data = generateSimulatedData();
-
-  // Try to get real data if a MikroTik is configured (non-blocking)
+async function takeSnapshot(): Promise<MonitoringSnapshot | null> {
   const hasConfig = loadMikroTikConfig() !== null;
+
+  // Only use real data when a router is configured
   if (hasConfig) {
-    fetchRealRouterData().then((realData) => {
-      if (realData) {
-        // Real data is available but snapshot already taken with simulated
-        // Real data flows through the dashboard API endpoint instead
+    const realData = await fetchRealRouterData();
+    if (realData && !realData.error && realData.health) {
+      const health = realData.health as {
+        cpuLoad: number; freeMemory: number; totalMemory: number;
+        temperature: number; boardName: string; routerOsVersion: string; uptime: string;
+      };
+      const interfaces = realData.interfaces as Array<{
+        name: string; status: string; rxRate: number; txRate: number;
+      }>;
+      const memoryUsedPct = ((health.totalMemory - health.freeMemory) / health.totalMemory) * 100;
+
+      const anomalies: string[] = [];
+      if (health.cpuLoad > 80) anomalies.push(`CPU alta: ${health.cpuLoad}%`);
+      if (health.temperature > 65) anomalies.push(`Temperatura elevada: ${health.temperature}C`);
+      for (const iface of interfaces) {
+        if (iface.status === "down") anomalies.push(`Interface ${iface.name} caida`);
       }
-    }).catch(() => {});
-  }
 
-  const memoryUsedPct =
-    ((data.health.totalMemory - data.health.freeMemory) / data.health.totalMemory) * 100;
-
-  const anomalies: string[] = [];
-
-  // Check for BGP session issues
-  for (const session of data.bgpSessions) {
-    if (session.status !== "established") {
-      anomalies.push(`BGP session ${session.name} is ${session.status}`);
+      console.log(`[Monitoring] Snapshot real: CPU ${health.cpuLoad}%, ${interfaces.length} interfaces`);
+      return {
+        timestamp: new Date().toISOString(),
+        cpuLoad: health.cpuLoad,
+        memoryUsedPct,
+        temperature: health.temperature,
+        bgpSessions: (realData.bgpSessions as Array<{ name: string; status: string; prefixCount: number }>) || [],
+        ospfNeighbors: (realData.ospfNeighbors as Array<{ identity: string; state: string }>) || [],
+        interfaceStatus: interfaces.map((i) => ({ name: i.name, status: i.status, rxRate: i.rxRate, txRate: i.txRate })),
+        anomalies,
+      };
     }
+    console.log("[Monitoring] Router configurado pero no se pudo obtener datos reales, omitiendo snapshot");
+    return null;
   }
 
-  // Check for OSPF issues
-  for (const neighbor of data.ospfNeighbors) {
-    if (neighbor.state !== "Full") {
-      anomalies.push(`OSPF neighbor ${neighbor.identity} state: ${neighbor.state}`);
-    }
-  }
-
-  // Check CPU
-  if (data.health.cpuLoad > 80) {
-    anomalies.push(`High CPU load: ${data.health.cpuLoad}%`);
-  }
-
-  // Check temperature
-  if (data.health.temperature > 65) {
-    anomalies.push(`High temperature: ${data.health.temperature}C`);
-  }
-
-  // Check interfaces
-  for (const iface of data.interfaces) {
-    if (iface.status === "down" && iface.name !== "ether4") {
-      anomalies.push(`Interface ${iface.name} is down`);
-    }
-  }
-
-  return {
-    timestamp: new Date().toISOString(),
-    cpuLoad: data.health.cpuLoad,
-    memoryUsedPct,
-    temperature: data.health.temperature,
-    bgpSessions: data.bgpSessions.map((s) => ({
-      name: s.name,
-      status: s.status,
-      prefixCount: s.prefixCount,
-    })),
-    ospfNeighbors: data.ospfNeighbors.map((n) => ({
-      identity: n.identity,
-      state: n.state,
-    })),
-    interfaceStatus: data.interfaces.map((i) => ({
-      name: i.name,
-      status: i.status,
-      rxRate: i.rxRate,
-      txRate: i.txRate,
-    })),
-    anomalies,
-  };
+  // No router configured - skip snapshots entirely
+  console.log("[Monitoring] Sin configuracion de router, omitiendo snapshot");
+  return null;
 }
 
 function detectAnomalies(current: MonitoringSnapshot): MonitoringAlert | null {
@@ -203,9 +172,11 @@ function detectAnomalies(current: MonitoringSnapshot): MonitoringAlert | null {
   return null;
 }
 
-function runMonitoringCycle(): void {
+async function runMonitoringCycle(): Promise<void> {
   try {
-    const snapshot = takeSnapshot();
+    const snapshot = await takeSnapshot();
+    if (!snapshot) return; // No data available, skip this cycle
+
     saveSnapshot(snapshot);
 
     // Cleanup old data periodically

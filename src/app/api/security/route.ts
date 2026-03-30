@@ -16,12 +16,20 @@ import {
   getSecurityStats,
   updateSecurityEventStatus,
   cleanupOldSecurityEvents,
+  loadMikroTikConfig,
 } from "@/lib/mikrotik/db";
 
 let autoStarted = false;
 let analysisAttached = false;
 
 function ensureEngineStarted(): void {
+  // Only auto-start simulated log ingestion if no real router is configured
+  const hasConfig = loadMikroTikConfig() !== null;
+  if (hasConfig) {
+    console.log("[Security] Router real configurado, log ingestion simulada deshabilitada");
+    return;
+  }
+
   if (!autoStarted) {
     autoStarted = true;
     startLogIngestion();
