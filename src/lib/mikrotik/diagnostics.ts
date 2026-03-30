@@ -78,10 +78,160 @@ async function diagnosticFirewall(): Promise<DiagnosticResult> {
   c.push(...cmd.commands);
   if (cmd.error) return { category: "Firewall", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion y permisos." };
   if (cmd.result.length === 0) return { category: "Firewall", findings: ["Sin reglas. Router ABIERTO."], severity: "critical", commands: c, solution: "/ip firewall filter\nadd action=accept chain=input connection-state=established,related\nadd action=drop chain=input connection-state=invalid\nadd action=drop chain=input in-interface=ether1" };
-  const ok = cmd.result[0]["connection-state"]?.includes("established");
-  f.push(ok ? "Primera regla OK: established/related." : "PROBLEMA: Primera regla no acepta established/related.");
-  f.push(`Reglas: ${cmd.result.length} total`);
-  return { category: "Firewall", findings: f, severity: f.some(x => x.includes("PROBLEMA")) ? "critical" : "info", commands: c, solution: "Dime que quieres bloquear/permitir." };
+
+  // Analyze each rule in detail
+  const rules = cmd.result;
+  const inputRules = rules.filter(r => (r.chain || "input") === "input");
+  const forwardRules = rules.filter(r => r.chain === "forward");
+  const outputRules = rules.filter(r => r.chain === "output");
+
+  // Count by action
+  const accepts = rules.filter(r => r.action === "accept");
+  const drops = rules.filter(r => r.action === "drop");
+  const rejects = rules.filter(r => r.action === "reject");
+  const logs = rules.filter(r => r.action === "log");
+  const jumps = rules.filter(r => r.action === "jump");
+
+  f.push(`=== RESUMEN: ${rules.length} reglas ===`);
+  f.push(`Input: ${inputRules.length} | Forward: ${forwardRules.length} | Output: ${outputRules.length}`);
+  f.push(`Accept: ${accepts.length} | Drop: ${drops.length} | Reject: ${rejects.length} | Log: ${logs.length}`);
+
+  // Analyze INPUT chain order
+  f.push("");
+  f.push("=== ANALISIS CHAIN INPUT ===");
+
+  // Check 1: First rule should be established/related
+  const firstInput = inputRules[0];
+  if (firstInput) {
+    const state = firstInput["connection-state"] || "";
+    if (state.includes("established") || state.includes("related")) {
+      f.push("OK: Primera regla acepta established/related");
+    } else {
+      f.push("PROBLEMA: Primera regla NO acepta established/related.");
+      f.push(`  Actual: action=${firstInput.action} chain=${firstInput.chain} ${firstInput["connection-state"] ? "state=" + firstInput["connection-state"] : ""}`);
+    }
+  }
+
+  // Check 2: Drop invalid should be early
+  const dropInvalidIdx = inputRules.findIndex(r => r.action === "drop" && (r["connection-state"] || "").includes("invalid"));
+  if (dropInvalidIdx === -1) {
+    f.push("PROBLEMA: No hay drop para conexiones invalidas.");
+  } else if (dropInvalidIdx <= 2) {
+    f.push("OK: Drop invalid en posicion correcta");
+  } else {
+    f.push(`ADVERTENCIA: Drop invalid en posicion ${dropInvalidIdx} (deberia ser 1-2)`);
+  }
+
+  // Check 3: ICMP should be limited
+  const icmpRules = inputRules.filter(r => r.protocol === "icmp");
+  if (icmpRules.length === 0) {
+    f.push("ADVERTENCIA: No hay regla para ICMP (ping). Puede fallar diagnostico.");
+  } else {
+    const icmpAccept = icmpRules.find(r => r.action === "accept");
+    if (icmpAccept && !icmpAccept["limit"]) {
+      f.push("ADVERTENCIA: ICMP aceptado sin limite. Agregar limit=50/5s para evitar flood.");
+    }
+  }
+
+  // Check 4: SSH/Winbox should be restricted
+  const sshRules = inputRules.filter(r => r["dst-port"]?.includes("22") || r["dst-port"]?.includes("8291"));
+  for (const r of sshRules) {
+    if (r.action === "accept" && !r["src-address"]) {
+      f.push(`PELIGRO: Puerto ${r["dst-port"]} aceptado sin restriccion de IP.`);
+    }
+  }
+
+  // Check 5: Last rule in input should be drop
+  const lastInput = inputRules[inputRules.length - 1];
+  if (lastInput) {
+    if (lastInput.action === "drop" && !lastInput["src-address"] && !lastInput["dst-port"]) {
+      f.push("OK: Ultima regla input es drop general");
+    } else if (lastInput.action !== "drop") {
+      f.push("PROBLEMA: Ultima regla input NO es drop. Trafico no autorizado puede pasar.");
+    }
+  }
+
+  // Check 6: WAN interface protection
+  const wanDrop = inputRules.find(r => r.action === "drop" && r["in-interface"] && !r["in-interface"].includes("bridge"));
+  if (!wanDrop) {
+    f.push("ADVERTENCIA: No se detecta drop especifico por interfaz WAN.");
+  }
+
+  // Analyze FORWARD chain
+  f.push("");
+  f.push("=== ANALISIS CHAIN FORWARD ===");
+  if (forwardRules.length === 0) {
+    f.push("INFO: Sin reglas forward. El router no filtra trafico entre LAN/WAN.");
+  } else {
+    const fwdDrop = forwardRules.filter(r => r.action === "drop");
+    const fwdAccept = forwardRules.filter(r => r.action === "accept");
+    f.push(`Forward: ${fwdAccept.length} accept, ${fwdDrop.length} drop`);
+  }
+
+  // Check connection count
+  const connCmd = await runCmd("/ip/firewall/connection/print", ["=count-only"]);
+  c.push(...connCmd.commands);
+  if (!connCmd.error && connCmd.result.length > 0) {
+    const connCount = parseInt(JSON.stringify(connCmd.result[0])) || 0;
+    f.push(`Conexiones activas: ${connCount}`);
+    if (connCount > 5000) f.push("ALERTA: Muchas conexiones. Posible DDoS.");
+  }
+
+  // Check address lists
+  const addrCmd = await runCmd("/ip/firewall/address-list/print", ["=count-only"]);
+  c.push(...addrCmd.commands);
+  if (!addrCmd.error) f.push(`Address lists: ${addrCmd.result.length} entradas`);
+
+  // Build solution based on findings
+  let solution = "";
+
+  if (!firstInput || !(firstInput["connection-state"] || "").includes("established")) {
+    solution += "PROBLEMA #1: Primera regla debe aceptar established/related.\n";
+    solution += "SOLUCION: Mueve la regla established/related al inicio:\n";
+    solution += `  /ip firewall filter move [find connection-state~"established"] 0\n\n`;
+  }
+
+  if (dropInvalidIdx === -1) {
+    solution += "PROBLEMA #2: Falta drop invalid.\n";
+    solution += "SOLUCION:\n";
+    solution += "  /ip firewall filter add action=drop chain=input connection-state=invalid place-after=0\n\n";
+  }
+
+  const badIcmp = icmpRules.find(r => r.action === "accept" && !r["limit"]);
+  if (badIcmp) {
+    solution += "PROBLEMA #3: ICMP sin limite.\n";
+    solution += "SOLUCION: Elimina la regla actual y agrega con limite:\n";
+    solution += `  /ip firewall filter remove [find protocol=icmp action=accept]\n`;
+    solution += `  /ip firewall filter add action=accept chain=input protocol=icmp limit=50,5:packet place-before=[find action=drop]\n\n`;
+  }
+
+  for (const r of sshRules) {
+    if (r.action === "accept" && !r["src-address"]) {
+      solution += `PROBLEMA #4: Puerto ${r["dst-port"]} abierto a todos.\n`;
+      solution += "SOLUCION: Restringe a tu IP:\n";
+      solution += `  /ip firewall filter set [find dst-port="${r["dst-port"]}"] src-address=TU_IP_PUBLICA\n\n`;
+    }
+  }
+
+  if (lastInput && lastInput.action !== "drop") {
+    solution += "PROBLEMA #5: Falta drop final en input.\n";
+    solution += "SOLUCION:\n";
+    solution += "  /ip firewall filter add action=drop chain=input comment=\"Drop all input\"\n\n";
+  }
+
+  if (!solution) {
+    solution = "Firewall configurado correctamente. No se detectaron problemas graves.";
+  } else {
+    solution = "=== PROBLEMAS DETECTADOS Y SOLUCIONES ===\n\n" + solution;
+  }
+
+  return {
+    category: "Firewall",
+    findings: f,
+    severity: f.some(x => x.includes("PELIGRO")) ? "critical" : f.some(x => x.includes("PROBLEMA")) ? "critical" : f.some(x => x.includes("ADVERTENCIA")) ? "warning" : "info",
+    commands: c,
+    solution,
+  };
 }
 
 async function diagnosticInterfaces(): Promise<DiagnosticResult> {
