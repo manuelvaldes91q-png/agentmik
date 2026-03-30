@@ -51,10 +51,10 @@ export async function POST(request: Request) {
 
     if (action === "fetch-data") {
       const routerData = await fetchRealRouterData();
-      if (routerData) {
-        return NextResponse.json({ success: true, ...routerData });
+      if (routerData && !routerData.error) {
+        return NextResponse.json({ success: true, interfaces: routerData.interfaces, health: routerData.health, bgpSessions: routerData.bgpSessions, ospfNeighbors: routerData.ospfNeighbors });
       }
-      return NextResponse.json({ success: false, error: "No se pudo obtener datos del router" });
+      return NextResponse.json({ success: false, error: routerData?.error || "No se pudo obtener datos del router. Verifica la configuracion en /settings" });
     }
 
     if (action === "test-saved") {

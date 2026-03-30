@@ -89,6 +89,8 @@ export async function fetchRealRouterData(): Promise<{
   health: unknown;
   bgpSessions: unknown[];
   ospfNeighbors: unknown[];
+  error?: string;
+  debugInfo?: Record<string, unknown>;
 } | null> {
   const config = loadMikroTikConfig();
   if (!config) return null;
@@ -111,14 +113,20 @@ export async function fetchRealRouterData(): Promise<{
 
     // Fetch interfaces - works the same on v6 and v7
     const ifaceData = await conn.write("/interface/print");
+
+    // Debug: log raw interface data from router
+    if (ifaceData && ifaceData.length > 0) {
+      console.log("[MikroTik] Raw interface sample:", JSON.stringify(ifaceData[0]));
+    }
+
     const interfaces = (ifaceData || []).map((i: Record<string, string>) => ({
       name: i.name,
       type: i.type || "ether",
       status: (i.running === "true" ? "up" : "down") as "up" | "down",
       rxBytes: parseInt(i["rx-byte"] || "0", 10),
       txBytes: parseInt(i["tx-byte"] || "0", 10),
-      rxRate: parseInt(i["rx-bits-per-second"] || "0", 10),
-      txRate: parseInt(i["tx-bits-per-second"] || "0", 10),
+      rxRate: parseInt(i["rx-bits-per-second"] || i["rx-bits-per-second-0"] || "0", 10),
+      txRate: parseInt(i["tx-bits-per-second"] || i["tx-bits-per-second-0"] || "0", 10),
       comment: i.comment || undefined,
     }));
 
@@ -138,7 +146,6 @@ export async function fetchRealRouterData(): Promise<{
     let bgpSessions: unknown[] = [];
     try {
       if (routerVersion === 6) {
-        // RouterOS v6: /routing bgp peer print
         const bgpData = await conn.write("/routing/bgp/peer/print");
         bgpSessions = (bgpData || []).map((s: Record<string, string>) => ({
           name: s.name || s["remote-address"] || "unknown",
@@ -149,7 +156,6 @@ export async function fetchRealRouterData(): Promise<{
           remoteAs: parseInt(s["remote-as"] || "0", 10),
         }));
       } else {
-        // RouterOS v7: /routing bgp session print
         const bgpData = await conn.write("/routing/bgp/session/print");
         bgpSessions = (bgpData || []).map((s: Record<string, string>) => ({
           name: s.name || s["remote-address"] || "unknown",
@@ -181,6 +187,6 @@ export async function fetchRealRouterData(): Promise<{
     return { interfaces, health, bgpSessions, ospfNeighbors };
   } catch (err) {
     if (conn) { try { conn.close(); } catch { /* */ } }
-    return null;
+    return { interfaces: [], health: null, bgpSessions: [], ospfNeighbors: [], error: parseError(err) };
   }
 }
