@@ -24,11 +24,123 @@ const bestPracticeSuggestions = [
   { pattern: /\/routing bgp/, suggestion: "Add firewall rules to allow BGP port 179/tcp from peers only" },
 ];
 
+// v6-specific patterns that indicate a RouterOS v6 script
+const v6Indicators = [
+  /\/routing\s+bgp\s+peer\b/,
+  /\/routing\s+bgp\s+advertisements\b/,
+  /\/routing\s+filter\b/,
+  /\/routing\s+ospf\s+instance\b/,
+  /\/routing\s+ospf\s+area\b/,
+  /\/routing\s+ospf\s+interface\b/,
+  /\/ip\s+firewall\s+connection\b/,
+  /\/ip\s+hotspot\s+setup\b/,
+  /\/queue\s+type\s+add\s+name=pcq/,
+  /\/tool\s+bandwidth-test\b/,
+];
+
+// v7-specific patterns
+const v7Indicators = [
+  /\/routing\/bgp\/session\b/,
+  /\/routing\/bgp\/connection\b/,
+  /\/routing\/route\/rules\b/,
+  /\/routing\/ospf\/instance\b/,
+  /\/ip\s+firewall\s+raw\b/,
+  /\/interface\/monitor-traffic\b/,
+];
+
+interface VersionMigration {
+  v6Command: string;
+  v7Command: string;
+  description: string;
+}
+
+const v6ToV7Migrations: VersionMigration[] = [
+  {
+    v6Command: "/routing bgp peer",
+    v7Command: "/routing bgp connection + /routing bgp session",
+    description: "BGP peer se divide en connection (configuracion) y session (estado)",
+  },
+  {
+    v6Command: "/routing bgp advertisements",
+    v7Command: "/routing bgp advertisements (igual, pero dentro del contexto de session)",
+    description: "Anuncios BGP ahora se consultan dentro del contexto de sesion",
+  },
+  {
+    v6Command: "/routing filter",
+    v7Command: "/routing/route/rules",
+    description: "Filtros de ruta ahora usan el motor de reglas de v7",
+  },
+  {
+    v6Command: "/routing ospf instance",
+    v7Command: "/routing/ospf/instance",
+    description: "Ruta de comandos OSPF cambia a path con slashes",
+  },
+  {
+    v6Command: "/routing ospf area",
+    v7Command: "/routing/ospf/area",
+    description: "Areas OSPF usan nueva ruta",
+  },
+  {
+    v6Command: "/interface monitor-traffic",
+    v7Command: "/interface/monitor-traffic",
+    description: "Ruta de comandos de interfaces usa slashes en v7",
+  },
+  {
+    v6Command: "/tool bandwidth-test",
+    v7Command: "/tool/bandwidth-test",
+    description: "Herramientas usan path con slashes en v7",
+  },
+];
+
+function detectScriptVersion(content: string): "v6" | "v7" | "unknown" {
+  let v6Score = 0;
+  let v7Score = 0;
+
+  for (const pattern of v6Indicators) {
+    if (pattern.test(content)) v6Score++;
+  }
+  for (const pattern of v7Indicators) {
+    if (pattern.test(content)) v7Score++;
+  }
+
+  if (v6Score > v7Score) return "v6";
+  if (v7Score > v6Score) return "v7";
+  if (v6Score > 0) return "v6";
+  return "unknown";
+}
+
+function generateMigrationHints(content: string): string[] {
+  const hints: string[] = [];
+  for (const migration of v6ToV7Migrations) {
+    if (content.includes(migration.v6Command)) {
+      hints.push(`[v6 -> v7] ${migration.v6Command} => ${migration.v7Command}: ${migration.description}`);
+    }
+  }
+  return hints;
+}
+
 export function analyzeRsc(content: string, filename: string): RscAnalysisResult {
   const lines = content.split("\n");
   const securityIssues: RscAnalysisResult["securityIssues"] = [];
   const suggestions: string[] = [];
   const parsedSections: Record<string, string[]> = {};
+
+  // Detect script version
+  const detectedVersion = detectScriptVersion(content);
+  if (detectedVersion === "v6") {
+    suggestions.push(
+      `Este script parece ser de RouterOS v6. Si tu router corre v7, puedo ayudarte a migrarlo. Escribe "migrar a v7" para ver los cambios necesarios.`
+    );
+    // Add migration hints
+    const migrationHints = generateMigrationHints(content);
+    for (const hint of migrationHints) {
+      suggestions.push(hint);
+    }
+  } else if (detectedVersion === "v7") {
+    suggestions.push(
+      `Script detectado como RouterOS v7. Si tu router corre v6, algunos comandos pueden no funcionar.`
+    );
+  }
 
   let currentSection = "general";
   for (const line of lines) {

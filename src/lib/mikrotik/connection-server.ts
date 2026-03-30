@@ -1,6 +1,7 @@
 import type { MikroTikConfig } from "@/lib/types";
 import { RouterOSAPI } from "node-routeros";
 import { loadMikroTikConfig, markMikroTikConnected } from "./db";
+import { setCachedRouterVersion } from "./chat-engine";
 
 type RouterOSVersion = 6 | 7;
 
@@ -52,6 +53,9 @@ export async function testConnection(
     const resourceRes = await conn.write("/system/resource/print");
     const version = resourceRes?.[0]?.version || "unknown";
     const board = resourceRes?.[0]?.["board-name"] || "unknown";
+
+    // Cache version for chat engine
+    setCachedRouterVersion(version);
 
     await conn.close();
     return { success: true, identity, version, board };
@@ -106,6 +110,9 @@ export async function fetchRealRouterData(): Promise<{
     const res = resources[0] || {};
     const versionStr: string = res.version || "7.0";
     const routerVersion = detectVersion(versionStr);
+
+    // Cache version for chat engine
+    setCachedRouterVersion(versionStr);
 
     // Fetch identity
     const identity = await conn.write("/system/identity/print");

@@ -30,6 +30,22 @@ const SECTIONS = [
     name: "IP Routing",
     paths: ["/docs/display/ROS/IP+Routing", "/docs/display/ROS/Routing"],
   },
+  {
+    name: "Legacy RouterOS v6",
+    paths: [
+      "/docs/display/ROS/Legacy",
+      "/docs/display/ROS/Legacy+Routing",
+      "/docs/display/ROS/BGP",
+      "/docs/display/ROS/OSPF",
+      "/docs/display/ROS/Filtering+and+Policy+Routing",
+      "/docs/display/ROS/Queues",
+      "/docs/display/ROS/NAT",
+      "/docs/display/ROS/DHCP",
+      "/docs/display/ROS/DNS",
+      "/docs/display/ROS/Hotspot",
+      "/docs/display/ROS/PPP",
+    ],
+  },
 ];
 
 export class MikroTikCrawler {
