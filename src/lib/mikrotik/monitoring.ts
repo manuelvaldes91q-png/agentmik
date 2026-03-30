@@ -8,6 +8,7 @@ import {
   recordMemoryPattern,
   findSimilarIncidents,
   savePendingAction,
+  saveMonitoringAlert,
   loadMikroTikConfig,
 } from "./db";
 import type {
@@ -74,74 +75,66 @@ function detectAnomalies(current: MonitoringSnapshot): MonitoringAlert | null {
   const now = Date.now();
   if (now - lastAnomalyTime < ANOMALY_COOLDOWN_MS) return null;
 
-  // Check previous snapshots for comparison
+  // Check previous snapshots for comparison (need at least 1)
   const recent = getRecentSnapshots(5);
-  if (recent.length < 2) return null;
 
-  // BGP session drop
-  for (const session of current.bgpSessions) {
-    const wasEstablished = recent.some(
-      (s) =>
-        s.bgpSessions.find((b) => b.name === session.name)?.status === "established"
-    );
-    if (session.status !== "established" && wasEstablished) {
-      lastAnomalyTime = now;
-
-      const alert: MonitoringAlert = {
-        id: generateId(),
-        severity: "critical",
-        title: `BGP session ${session.name} caida`,
-        detail: `Sesion BGP con ${session.name} paso a estado ${session.status}. Posible perdida de conectividad con el peer.`,
-        source: "BGP Monitor",
-        timestamp: new Date().toISOString(),
-        proposedCommand: `/routing bgp connection set [find name="${session.name}"] disabled=no`,
-      };
-
-      // Record incident
-      const incident: Incident = {
-        id: `inc-${Date.now().toString(36)}`,
-        timestamp: new Date().toISOString(),
-        type: "bgp",
-        description: `BGP session ${session.name} dropped to ${session.status}`,
-        resolution: "",
-        commands: "",
-        resolved: false,
-      };
-      saveIncident(incident);
-
-      // Check for similar past incidents
-      const similar = findSimilarIncidents(`BGP ${session.name} down`, "bgp");
-      if (similar.length > 0 && similar[0].occurrences > 1) {
-        alert.detail += `\n\nNota: Este problema ha ocurrido ${similar[0].occurrences} veces anteriormente. Posible causa recurrente.`;
+  // Interface flapping detection (needs 1 previous snapshot)
+  if (recent.length >= 1) {
+    const prevSnapshot = recent[0];
+    for (const iface of current.interfaceStatus) {
+      const prevIface = prevSnapshot.interfaceStatus.find((i: { name: string }) => i.name === iface.name);
+      if (prevIface && prevIface.status !== iface.status) {
+        lastAnomalyTime = now;
+        const alert: MonitoringAlert = {
+          id: generateId(),
+          severity: "warning",
+          title: `Interface ${iface.name} cambio de estado`,
+          detail: `Interface ${iface.name} paso de ${prevIface.status} a ${iface.status}. Posible flap o problema fisico.`,
+          source: "Interface Monitor",
+          timestamp: new Date().toISOString(),
+        };
+        saveMonitoringAlert(alert);
+        return alert;
       }
-
-      recordMemoryPattern(`bgp-down-${session.name}`, `BGP session ${session.name} went ${session.status}`);
-
-      return alert;
     }
   }
 
-  // CPU spike
-  const avgCpu = recent.reduce((sum, s) => sum + s.cpuLoad, 0) / recent.length;
-  if (current.cpuLoad > 85 && avgCpu < 50) {
+  // High CPU (no previous data needed)
+  if (current.cpuLoad > 85) {
     lastAnomalyTime = now;
-
-    return {
+    const alert: MonitoringAlert = {
       id: generateId(),
       severity: "warning",
-      title: "Pico de CPU detectado",
-      detail: `CPU subio a ${current.cpuLoad}% (promedio reciente: ${avgCpu.toFixed(1)}%). Posible saturacion o ataque.`,
+      title: "CPU alta detectada",
+      detail: `CPU en ${current.cpuLoad}%. Posible saturacion, ataque DDoS o proceso bloqueante. Usa /tool profile para diagnostico.`,
       source: "CPU Monitor",
       timestamp: new Date().toISOString(),
-      proposedCommand: `/ip firewall raw add action=drop chain=prerouting src-address-list=blocked-ddos comment="Auto-block DDoS"`,
+      proposedCommand: `/tool profile duration=15`,
     };
+    saveMonitoringAlert(alert);
+    return alert;
   }
 
-  // Temperature warning
+  // Memory high (no previous data needed)
+  if (current.memoryUsedPct > 90) {
+    lastAnomalyTime = now;
+    const alert: MonitoringAlert = {
+      id: generateId(),
+      severity: "warning",
+      title: "Memoria RAM alta",
+      detail: `Uso de memoria: ${current.memoryUsedPct.toFixed(0)}%. Considera deshabilitar paquetes innecesarios.`,
+      source: "Memory Monitor",
+      timestamp: new Date().toISOString(),
+      proposedCommand: `/system package print`,
+    };
+    saveMonitoringAlert(alert);
+    return alert;
+  }
+
+  // Temperature warning (no previous data needed)
   if (current.temperature > 70) {
     lastAnomalyTime = now;
-
-    return {
+    const alert: MonitoringAlert = {
       id: generateId(),
       severity: "warning",
       title: "Temperatura elevada",
@@ -149,23 +142,64 @@ function detectAnomalies(current: MonitoringSnapshot): MonitoringAlert | null {
       source: "Thermal Monitor",
       timestamp: new Date().toISOString(),
     };
+    saveMonitoringAlert(alert);
+    return alert;
   }
 
-  // Interface flapping detection
-  const prevSnapshot = recent[0];
-  for (const iface of current.interfaceStatus) {
-    const prevIface = prevSnapshot.interfaceStatus.find((i) => i.name === iface.name);
-    if (prevIface && prevIface.status !== iface.status) {
-      lastAnomalyTime = now;
+  // BGP session drop (needs previous data)
+  if (recent.length >= 2) {
+    for (const session of current.bgpSessions) {
+      const wasEstablished = recent.some(
+        (s: MonitoringSnapshot) =>
+          s.bgpSessions.find((b: { name: string }) => b.name === session.name)?.status === "established"
+      );
+      if (session.status !== "established" && wasEstablished) {
+        lastAnomalyTime = now;
 
-      return {
+        const alert: MonitoringAlert = {
+          id: generateId(),
+          severity: "critical",
+          title: `BGP session ${session.name} caida`,
+          detail: `Sesion BGP con ${session.name} paso a estado ${session.status}. Posible perdida de conectividad.`,
+          source: "BGP Monitor",
+          timestamp: new Date().toISOString(),
+          proposedCommand: `/routing bgp peer set [find name="${session.name}"] disabled=no`,
+        };
+        saveMonitoringAlert(alert);
+
+        const incident: Incident = {
+          id: `inc-${Date.now().toString(36)}`,
+          timestamp: new Date().toISOString(),
+          type: "bgp",
+          description: `BGP session ${session.name} dropped to ${session.status}`,
+          resolution: "",
+          commands: "",
+          resolved: false,
+        };
+        saveIncident(incident);
+        recordMemoryPattern(`bgp-down-${session.name}`, `BGP session ${session.name} went ${session.status}`);
+
+        return alert;
+      }
+    }
+  }
+
+  // CPU spike (needs previous data for average)
+  if (recent.length >= 2) {
+    const avgCpu = recent.reduce((sum: number, s: MonitoringSnapshot) => sum + s.cpuLoad, 0) / recent.length;
+    if (current.cpuLoad > 85 && avgCpu < 50) {
+      lastAnomalyTime = now;
+      const alert: MonitoringAlert = {
         id: generateId(),
         severity: "warning",
-        title: `Interface ${iface.name} cambio de estado`,
-        detail: `Interface ${iface.name} paso de ${prevIface.status} a ${iface.status}. Posible flap o problema fisico.`,
-        source: "Interface Monitor",
+        title: "Pico de CPU detectado",
+        detail: `CPU subio a ${current.cpuLoad}% (promedio reciente: ${avgCpu.toFixed(1)}%). Posible saturacion o ataque.`,
+        source: "CPU Monitor",
         timestamp: new Date().toISOString(),
+        proposedCommand: `/tool profile duration=15`,
       };
+      saveMonitoringAlert(alert);
+      return alert;
     }
   }
 

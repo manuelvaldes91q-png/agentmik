@@ -40,11 +40,23 @@ interface DashboardData {
   alerts: Alert[];
 }
 
+interface MonitoringAlert {
+  id: string;
+  severity: string;
+  title: string;
+  detail: string;
+  source: string;
+  timestamp: string;
+  proposedCommand: string;
+  read: boolean;
+}
+
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [isRealData, setIsRealData] = useState(false);
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [monitoringAlerts, setMonitoringAlerts] = useState<MonitoringAlert[]>([]);
   const mountedRef = useRef(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({
     syncing: false,
@@ -159,6 +171,21 @@ export default function DashboardPage() {
         }
       })
       .catch(() => {});
+
+    // Fetch monitoring alerts every 10s
+    const fetchAlerts = () => {
+      fetch("/api/monitoring?action=alerts")
+        .then((res) => res.json())
+        .then((json) => {
+          if (json.success) {
+            setMonitoringAlerts(json.alerts || []);
+          }
+        })
+        .catch(() => {});
+    };
+    fetchAlerts();
+    const alertInterval = setInterval(fetchAlerts, 10000);
+    return () => clearInterval(alertInterval);
   }, []);
 
   const handleSyncDocs = async () => {
@@ -454,10 +481,39 @@ export default function DashboardPage() {
         </div>
 
         <div>
-          <h2 className="text-sm font-semibold text-slate-300 mb-3">Alerts</h2>
+          <h2 className="text-sm font-semibold text-slate-300 mb-3">Alertas del Sistema</h2>
           <div className="space-y-2">
-            {data.alerts.map((alert) => (
-              <AlertItem key={alert.id} alert={alert} />
+            {monitoringAlerts.length === 0 && (
+              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800/50 text-center text-sm text-slate-500">
+                {isConfigured ? "Monitoreando tu router... Las alertas apareceran automaticamente." : "Sin alertas activas."}
+              </div>
+            )}
+            {monitoringAlerts.map((alert) => (
+              <div key={alert.id} className={`bg-slate-900/50 rounded-lg p-3 border ${
+                alert.severity === "critical" ? "border-red-500/30" :
+                alert.severity === "warning" ? "border-amber-500/30" :
+                "border-slate-800/50"
+              }`}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                    alert.severity === "critical" ? "bg-red-500/20 text-red-400" :
+                    alert.severity === "warning" ? "bg-amber-500/20 text-amber-400" :
+                    "bg-slate-500/20 text-slate-400"
+                  }`}>
+                    {alert.severity}
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    {new Date(alert.timestamp).toLocaleTimeString()} - {alert.source}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-200 font-medium">{alert.title}</p>
+                <p className="text-xs text-slate-400 mt-1">{alert.detail}</p>
+                {alert.proposedCommand && (
+                  <code className="text-xs text-emerald-400 font-mono mt-2 block bg-slate-800/50 p-2 rounded">
+                    {alert.proposedCommand}
+                  </code>
+                )}
+              </div>
             ))}
           </div>
         </div>

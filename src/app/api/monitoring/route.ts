@@ -4,7 +4,7 @@ import {
   stopMonitoring,
   getMonitoringStatus,
 } from "@/lib/mikrotik/monitoring";
-import { getRecentSnapshots, getPendingActions, getActionLog } from "@/lib/mikrotik/db";
+import { getRecentSnapshots, getPendingActions, getActionLog, getMonitoringAlerts, clearMonitoringAlerts } from "@/lib/mikrotik/db";
 
 let autoStarted = false;
 
@@ -34,6 +34,11 @@ export async function GET(request: Request) {
       return NextResponse.json({ success: true, pending, log });
     }
 
+    if (action === "alerts") {
+      const alerts = getMonitoringAlerts(20);
+      return NextResponse.json({ success: true, alerts });
+    }
+
     const status = getMonitoringStatus();
     return NextResponse.json({ success: true, ...status });
   } catch {
@@ -56,6 +61,11 @@ export async function POST(request: Request) {
     if (command === "stop") {
       stopMonitoring();
       return NextResponse.json({ success: true, message: "Monitoring stopped" });
+    }
+
+    if (command === "clear-alerts") {
+      clearMonitoringAlerts();
+      return NextResponse.json({ success: true, message: "Alerts cleared" });
     }
 
     return NextResponse.json({ success: false, error: "Unknown command" }, { status: 400 });

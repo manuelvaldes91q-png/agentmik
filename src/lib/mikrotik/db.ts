@@ -41,6 +41,19 @@ function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON monitoring_snapshots(timestamp);
 
+    CREATE TABLE IF NOT EXISTS monitoring_alerts (
+      id TEXT PRIMARY KEY,
+      severity TEXT NOT NULL,
+      title TEXT NOT NULL,
+      detail TEXT NOT NULL,
+      source TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      proposed_command TEXT DEFAULT '',
+      read INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_alerts_ts ON monitoring_alerts(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_alerts_read ON monitoring_alerts(read);
+
     CREATE TABLE IF NOT EXISTS pending_actions (
       id TEXT PRIMARY KEY,
       command TEXT NOT NULL,
@@ -206,6 +219,30 @@ export function getSnapshotsSince(since: string): MonitoringSnapshot[] {
     interfaceStatus: JSON.parse(r.interface_status),
     anomalies: JSON.parse(r.anomalies),
   }));
+}
+
+// Monitoring alerts
+export function saveMonitoringAlert(alert: { id: string; severity: string; title: string; detail: string; source: string; timestamp: string; proposedCommand?: string }): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR IGNORE INTO monitoring_alerts (id, severity, title, detail, source, timestamp, proposed_command)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(alert.id, alert.severity, alert.title, alert.detail, alert.source, alert.timestamp, alert.proposedCommand || "");
+}
+
+export function getMonitoringAlerts(limit = 20): Array<{ id: string; severity: string; title: string; detail: string; source: string; timestamp: string; proposedCommand: string; read: boolean }> {
+  const db = getDb();
+  const rows = db.prepare("SELECT * FROM monitoring_alerts ORDER BY timestamp DESC LIMIT ?").all(limit) as Array<{
+    id: string; severity: string; title: string; detail: string; source: string; timestamp: string; proposed_command: string; read: number;
+  }>;
+  return rows.map((r) => ({
+    id: r.id, severity: r.severity, title: r.title, detail: r.detail,
+    source: r.source, timestamp: r.timestamp, proposedCommand: r.proposed_command, read: r.read === 1,
+  }));
+}
+
+export function clearMonitoringAlerts(): void {
+  getDb().prepare("DELETE FROM monitoring_alerts").run();
 }
 
 // Pending actions
