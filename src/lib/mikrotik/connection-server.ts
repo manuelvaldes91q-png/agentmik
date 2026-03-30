@@ -66,7 +66,8 @@ export async function testConnection(
 }
 
 export async function executeCommand(
-  command: string
+  command: string,
+  params: string[] = []
 ): Promise<{ success: boolean; result?: unknown[]; error?: string }> {
   const config = loadMikroTikConfig();
   if (!config) return { success: false, error: "No hay configuracion guardada" };
@@ -74,7 +75,7 @@ export async function executeCommand(
   try {
     conn = createConnection(config);
     await conn.connect();
-    const result = await conn.write(command);
+    const result = params.length > 0 ? await conn.write(command, params) : await conn.write(command);
     await conn.close();
     markMikroTikConnected();
     return { success: true, result };
