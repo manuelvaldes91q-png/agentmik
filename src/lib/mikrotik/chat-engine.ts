@@ -1,233 +1,485 @@
 import { searchKnowledge } from "@/docs/knowledge-base";
 import { generateConfigSuggestion } from "./analyzer";
 import { getVectorStore } from "@/lib/ingestion/vector-store";
+import {
+  findSimilarIncidents,
+  getRecentIncidents,
+  saveIncident,
+  recordMemoryPattern,
+  savePendingAction,
+} from "./db";
+import type {
+  AgentResponse,
+  CoTStep,
+  ProposedAction,
+  MonitoringAlert,
+  Incident,
+} from "@/lib/types";
 
-const systemPrompt = `You are MikroTik Expert Sentinel, an AI assistant specialized in MikroTik RouterOS configuration and network engineering. You hold MTCNA, MTCRE, and MTCINE certifications.
+const SENIOR_ENGINEER_PERSONA = `You are a Senior Network Engineer with MTCNA, MTCRE, and MTCINE certifications.
+You manage production MikroTik infrastructure for ISPs and enterprises.
+Your tone is direct, technical, and analytical. You do not use pleasantries.
+You reason through problems methodically before proposing solutions.
+If asked to do something that compromises network security, you refuse and explain why, then propose a secure alternative.
+You prioritize RouterOS v7 solutions and follow MikroTik best practices.`;
 
-Key guidelines:
-- Prioritize RouterOS v7 solutions
-- Follow MikroTik best practices for security (Firewall, Mangle, Raw rules)
-- Speak technically but accessibly
-- Provide RouterOS script examples in code blocks
-- Always consider security implications
-- Recommend connection-state tracking in firewall rules
-- Suggest raw rules for performance-critical traffic`;
+function generateId(): string {
+  return `act-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
 
-export function generateChatResponse(userMessage: string): string {
+function analyzeRisk(command: string): {
+  riskLevel: "low" | "medium" | "high";
+  reversible: boolean;
+  revertCommand?: string;
+} {
+  const cmd = command.toLowerCase();
+
+  if (
+    cmd.includes("/system reboot") ||
+    cmd.includes("/system shutdown") ||
+    cmd.includes("reset-configuration") ||
+    cmd.includes("remove numbers")
+  ) {
+    return { riskLevel: "high", reversible: false };
+  }
+
+  if (
+    cmd.includes("/ip firewall filter") ||
+    cmd.includes("/ip firewall nat") ||
+    cmd.includes("/routing bgp") ||
+    cmd.includes("/routing ospf") ||
+    cmd.includes("/interface disable") ||
+    cmd.includes("=disabled=yes")
+  ) {
+    return { riskLevel: "medium", reversible: true, revertCommand: "Manual revert required" };
+  }
+
+  if (cmd.includes("/ip firewall raw") || cmd.includes("/queue") || cmd.includes("/ip address")) {
+    return { riskLevel: "low", reversible: true };
+  }
+
+  return { riskLevel: "low", reversible: true };
+}
+
+function generateCommand(query: string): string | null {
+  const lower = query.toLowerCase();
+
+  if (lower.includes("firewall") && (lower.includes("add") || lower.includes("create") || lower.includes("block"))) {
+    return `/ip firewall filter add action=drop chain=input in-interface-list=WAN comment="Added by Sentinel"`;
+  }
+
+  if (lower.includes("bgp") && (lower.includes("enable") || lower.includes("activate"))) {
+    return `/routing bgp connection set [find name~"peer"] disabled=no`;
+  }
+
+  if (lower.includes("nat") && (lower.includes("add") || lower.includes("create") || lower.includes("masquerade"))) {
+    return `/ip firewall nat add action=masquerade chain=srcnat out-interface-list=WAN comment="Sentinel NAT rule"`;
+  }
+
+  if (lower.includes("queue") && (lower.includes("add") || lower.includes("limit"))) {
+    return `/queue simple add max-limit=10M/20M name=sentinel-limited target=192.168.1.0/24`;
+  }
+
+  if (lower.includes("backup") || lower.includes("export")) {
+    return `/export file=sentinel-backup`;
+  }
+
+  return null;
+}
+
+export function generateAgentResponse(
+  userMessage: string,
+  monitoringContext?: MonitoringAlert | null
+): AgentResponse {
   const lowerMessage = userMessage.toLowerCase();
 
-  if (
-    lowerMessage.includes("help") ||
-    lowerMessage.includes("hello") ||
-    lowerMessage.includes("hi")
-  ) {
-    return `I'm MikroTik Expert Sentinel, your RouterOS specialist. I can help you with:
+  // Greeting
+  if (lowerMessage.match(/^(help|hello|hi|hey)\b/)) {
+    return {
+      cotSteps: [],
+      response: `MikroTik Expert Sentinel online. I'm your network operations analyst.
 
-- **Firewall configuration** - Filter rules, Mangle, Raw rules
-- **VPN setup** - WireGuard, IPsec, OpenVPN
-- **Routing protocols** - BGP, OSPF, policy routing
-- **QoS & Bandwidth control** - Queue trees, PCQ, simple queues
-- **Security hardening** - Best practices, threat mitigation
-- **VLAN & bridging** - Network segmentation
-- **Scripting** - Automation, scheduled tasks
+I can handle:
+- **Firewall/NAT/Raw** rule design and troubleshooting
+- **BGP/OSPF** routing analysis and optimization
+- **VPN** deployment (WireGuard, IPsec IKEv2)
+- **QoS** queue trees and PCQ configuration
+- **VLAN/Bridge** segmentation
+- **Security hardening** and threat response
+- **Live monitoring** with anomaly detection
+- **Command execution** with safety analysis
 
-Upload an .rsc file for configuration analysis, or ask me any RouterOS question. I'll provide code examples for RouterOS v7.`;
+I run continuous monitoring in the background. If I detect an anomaly, I'll alert you with a proposed fix.
+
+What's the situation?`,
+      proposedAction: null,
+      references: [],
+      monitoringAlert: null,
+    };
   }
 
-  const configResponse = generateConfigSuggestion(userMessage);
-  if (!configResponse.startsWith("I don't have")) {
-    return configResponse;
+  const cotSteps: CoTStep[] = [];
+  const references: string[] = [];
+
+  // Step 1: Situation Analysis
+  cotSteps.push({
+    label: "Analisis de Situacion",
+    content: buildSituationAnalysis(userMessage, monitoringContext),
+    type: "analysis",
+  });
+
+  // Step 2: Reasoning - contrast with docs and past incidents
+  const docReferences = gatherDocumentation(userMessage);
+  const pastIncidents = findSimilarIncidents(
+    userMessage,
+    classifyQueryType(userMessage)
+  );
+  const recentIncidents = getRecentIncidents(5);
+
+  cotSteps.push({
+    label: "Razonamiento Tecnico",
+    content: buildReasoning(userMessage, docReferences, pastIncidents, recentIncidents),
+    type: "reasoning",
+  });
+
+  // Step 3: Hypothesis
+  cotSteps.push({
+    label: "Hipotesis",
+    content: buildHypothesis(userMessage, monitoringContext, pastIncidents),
+    type: "hypothesis",
+  });
+
+  // Step 4: Action Proposal
+  const proposedCommand = generateCommand(userMessage);
+  let proposedAction: ProposedAction | null = null;
+
+  if (proposedCommand && (lowerMessage.includes("add") || lowerMessage.includes("create") || lowerMessage.includes("execute") || lowerMessage.includes("run") || lowerMessage.includes("fix") || lowerMessage.includes("apply"))) {
+    const risk = analyzeRisk(proposedCommand);
+    proposedAction = {
+      id: generateId(),
+      command: proposedCommand,
+      explanation: buildActionExplanation(userMessage, proposedCommand),
+      riskLevel: risk.riskLevel,
+      reversible: risk.reversible,
+      revertCommand: risk.revertCommand,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    };
+
+    savePendingAction(proposedAction);
+
+    cotSteps.push({
+      label: "Propuesta de Accion",
+      content: buildActionProposal(proposedCommand, risk),
+      type: "action",
+    });
+  } else {
+    cotSteps.push({
+      label: "Propuesta de Accion",
+      content: "No se requiere accion automatica. Respuesta basada en analisis de documentacion y contexto de red.",
+      type: "action",
+    });
   }
 
-  // Search vector store first (crawled MikroTik documentation)
+  // Build final response
+  const response = buildFinalResponse(userMessage, docReferences, proposedAction);
+
+  // Add references
+  for (const ref of docReferences) {
+    if (ref.url) references.push(ref.url);
+  }
+
+  // Record incident if this is a problem report
+  if (lowerMessage.includes("problem") || lowerMessage.includes("issue") || lowerMessage.includes("down") || lowerMessage.includes("error") || lowerMessage.includes("fail")) {
+    const incident: Incident = {
+      id: `inc-${Date.now().toString(36)}`,
+      timestamp: new Date().toISOString(),
+      type: classifyQueryType(userMessage),
+      description: userMessage,
+      resolution: proposedAction ? `Proposed: ${proposedCommand}` : "Analyzed",
+      commands: proposedCommand || "",
+      resolved: false,
+    };
+    saveIncident(incident);
+    recordMemoryPattern(
+      `${classifyQueryType(userMessage)}-${userMessage.toLowerCase().split(/\s+/).slice(0, 3).join("-")}`,
+      userMessage
+    );
+  }
+
+  return {
+    cotSteps,
+    response,
+    proposedAction,
+    references,
+    monitoringAlert: monitoringContext || null,
+  };
+}
+
+function buildSituationAnalysis(
+  query: string,
+  monitoringContext?: MonitoringAlert | null
+): string {
+  const parts: string[] = [];
+
+  parts.push(`Consulta del operador: "${query}"`);
+
+  if (monitoringContext) {
+    parts.push(
+      `Alerta activa detectada: [${monitoringContext.severity.toUpperCase()}] ${monitoringContext.title} - ${monitoringContext.detail}`
+    );
+  }
+
+  parts.push(`Tipo de consulta clasificada: ${classifyQueryType(query)}`);
+  parts.push(
+    "Revisando estado actual de la red, configuracion activa y documentacion relevante de help.mikrotik.com."
+  );
+
+  return parts.join("\n");
+}
+
+function buildReasoning(
+  query: string,
+  docs: Array<{ section: string; text: string; url?: string }>,
+  pastIncidents: Array<{ description: string; occurrences: number; resolution: string }>,
+  recentIncidents: Incident[]
+): string {
+  const parts: string[] = [];
+
+  if (docs.length > 0) {
+    parts.push(
+      `Documentacion relevante encontrada: ${docs.length} fragmento(s) de help.mikrotik.com.`
+    );
+    parts.push(`Referencia principal: "${docs[0].section}" - ${docs[0].text.slice(0, 200)}...`);
+  } else {
+    parts.push(
+      "No se encontro documentacion crawleada directamente relevante. Aplicando conocimiento estatico de RouterOS v7."
+    );
+  }
+
+  if (pastIncidents.length > 0) {
+    parts.push(
+      `\nPatrones historicos encontrados: ${pastIncidents.length} incidente(s) similares.`
+    );
+    for (const inc of pastIncidents.slice(0, 2)) {
+      parts.push(
+        `- "${inc.description}" (ocurrencias: ${inc.occurrences}, resolucion previa: ${inc.resolution || "N/A"})`
+      );
+    }
+  }
+
+  if (recentIncidents.length > 0) {
+    const unresolved = recentIncidents.filter((i) => !i.resolved);
+    if (unresolved.length > 0) {
+      parts.push(
+        `\nAdvertencia: ${unresolved.length} incidente(s) sin resolver en el historial reciente.`
+      );
+    }
+  }
+
+  return parts.join("\n");
+}
+
+function buildHypothesis(
+  query: string,
+  monitoringContext?: MonitoringAlert | null,
+  pastIncidents?: Array<{ description: string; occurrences: number }>
+): string {
+  const lower = query.toLowerCase();
+
+  if (monitoringContext) {
+    if (monitoringContext.severity === "critical") {
+      return `Problema critico confirmado por monitoreo: ${monitoringContext.title}.\nCausa mas probable: ${monitoringContext.detail}.\nSe requiere accion inmediata para evitar impacto en produccion.`;
+    }
+    return `Anomalia detectada por monitoreo: ${monitoringContext.title}.\nPosible causa: ${monitoringContext.detail}.\nSe recomienda investigacion y accion preventiva.`;
+  }
+
+  if (pastIncidents && pastIncidents.length > 0 && pastIncidents[0].occurrences > 1) {
+    return `Patron recurrente detectado. Este problema ha ocurrido ${pastIncidents[0].occurrences} veces.\nCausa probable: problema intermitente conocido.\nSe recomienda aplicar la resolucion previa o implementar una solucion permanente.`;
+  }
+
+  if (lower.includes("bgp")) {
+    return "Posible causa: desconexion de sesion BGP por holdtime expirado, filtro de prefijos incorrecto, o problema de conectividad con el peer.\nVerificar: estado de sesion, reglas de firewall en puerto 179/tcp, y anuncios de red.";
+  }
+
+  if (lower.includes("cpu") || lower.includes("slow") || lower.includes("lento")) {
+    return "Posible causa: saturacion de CPU por procesamiento de reglas firewall ineficientes, ataque DDoS, o proceso nativo consumiendo recursos.\nVerificar: /ip firewall filter orden de reglas, connection tracking, raw rules para bypass.";
+  }
+
+  if (lower.includes("packet loss") || lower.includes("perdida") || lower.includes("latency") || lower.includes("latencia")) {
+    return "Posible causa: congestion de enlace, errores en interfaz fisica, o saturacion de cola QoS.\nVerificar: /interface ethernet monitor, /queue simple/tree, /tool ping al gateway.";
+  }
+
+  if (lower.includes("firewall") || lower.includes("nat")) {
+    return "Posible causa: regla mal ordenada, falta de connection-state tracking, o NAT incorrecto.\nVerificar: orden de reglas (established/related primero), logs de firewall.";
+  }
+
+  return "Analisis general: verificar logs del sistema (/log print), estado de interfaces, y reglas activas.\nSe requiere informacion adicional para diagnostico preciso.";
+}
+
+function buildActionProposal(
+  command: string,
+  risk: { riskLevel: string; reversible: boolean; revertCommand?: string }
+): string {
+  const parts: string[] = [];
+  parts.push(`Comando propuesto:\n\`\`\`routeros\n${command}\n\`\`\``);
+  parts.push(`Nivel de riesgo: ${risk.riskLevel.toUpperCase()}`);
+  parts.push(`Reversible: ${risk.reversible ? "Si" : "No"}`);
+  if (risk.revertCommand) {
+    parts.push(`Comando de reversión: ${risk.revertCommand}`);
+  }
+
+  if (risk.riskLevel === "high") {
+    parts.push("\n**ADVERTENCIA**: Este comando tiene alto riesgo. Requiere confirmacion explicita.");
+  }
+
+  parts.push('\nResponda "OK" para ejecutar, o "cancelar" para descartar.');
+
+  return parts.join("\n");
+}
+
+function buildActionExplanation(query: string, command: string): string {
+  if (command.includes("firewall filter")) {
+    return "Se agrega una regla de firewall para restringir el acceso. La regla se inserta considerando el orden correcto de procesamiento (established/related primero).";
+  }
+  if (command.includes("bgp")) {
+    return "Se modifica la configuracion BGP para resolver el problema de conectividad con el peer. Se mantiene la configuracion de templates existente.";
+  }
+  if (command.includes("nat")) {
+    return "Se agrega regla NAT/masquerade para permitir trafico saliente. Se aplica solo a la interfaz WAN.";
+  }
+  if (command.includes("queue")) {
+    return "Se configura limitacion de ancho de banda mediante queue simple. Se aplica al rango de red especificado.";
+  }
+  if (command.includes("export")) {
+    return "Se genera un backup de la configuracion actual del router.";
+  }
+  return "Comando generado segun la solicitud del operador.";
+}
+
+function buildFinalResponse(
+  query: string,
+  docs: Array<{ section: string; text: string; url?: string; codeExamples?: string[] }>,
+  action: ProposedAction | null
+): string {
+  const parts: string[] = [];
+
+  if (docs.length > 0) {
+    const top = docs[0];
+    parts.push(`**${top.section}**\n\n${top.text}`);
+    if (top.codeExamples && top.codeExamples.length > 0) {
+      for (const code of top.codeExamples) {
+        parts.push(`\`\`\`routeros\n${code}\n\`\`\``);
+      }
+    }
+    if (top.url) {
+      parts.push(`_Fuente: [MikroTik Docs](${top.url})_`);
+    }
+  } else {
+    // Fallback to static KB
+    const entries = searchKnowledge(query);
+    if (entries.length > 0) {
+      const entry = entries[0];
+      parts.push(`**${entry.topic}** (RouterOS ${entry.routerOsVersion})\n\n${entry.content}`);
+      if (entry.codeExample) {
+        parts.push(`\`\`\`routeros\n${entry.codeExample}\n\`\`\``);
+      }
+    } else {
+      const configSuggestion = generateConfigSuggestion(query);
+      if (!configSuggestion.startsWith("I don't have")) {
+        parts.push(configSuggestion);
+      } else {
+        parts.push(
+          `No tengo informacion especifica sobre "${query}". Proporcione mas detalles sobre el escenario de red para un diagnostico mas preciso.`
+        );
+      }
+    }
+  }
+
+  if (action) {
+    parts.push(
+      `\n---\n**Accion pendiente** (${action.riskLevel} risk): \`${action.command}\`\nEsperando su confirmacion para ejecutar.`
+    );
+  }
+
+  return parts.join("\n\n");
+}
+
+function gatherDocumentation(
+  query: string
+): Array<{ section: string; text: string; url?: string; codeExamples?: string[] }> {
   try {
-    const vectorResults = getVectorStore().search(userMessage, 3);
-    if (vectorResults.length > 0 && vectorResults[0].score > 0.05) {
-      const topResult = vectorResults[0];
-      const chunk = topResult.chunk;
-      let response = `**${chunk.section}** (${chunk.title})\n\n${chunk.text}\n\n`;
-      if (chunk.codeExamples.length > 0) {
-        for (const code of chunk.codeExamples) {
-          response += `\`\`\`routeros\n${code}\n\`\`\`\n`;
-        }
-      }
-      response += `\n_Source: [MikroTik Documentation](${chunk.url})_`;
-
-      if (vectorResults.length > 1) {
-        const related = vectorResults
-          .slice(1)
-          .filter((r) => r.score > 0.03)
-          .map((r) => `**${r.chunk.section}**`);
-        if (related.length > 0) {
-          response += "\n\nRelated: " + related.join(", ");
-        }
-      }
-
-      return response;
+    const results = getVectorStore().search(query, 3);
+    if (results.length > 0 && results[0].score > 0.05) {
+      return results
+        .filter((r) => r.score > 0.03)
+        .map((r) => ({
+          section: r.chunk.section,
+          text: r.chunk.text,
+          url: r.chunk.url,
+          codeExamples: r.chunk.codeExamples,
+        }));
     }
   } catch {
-    // Fall through to static knowledge base
+    // Vector store not initialized
+  }
+  return [];
+}
+
+function classifyQueryType(query: string): string {
+  const lower = query.toLowerCase();
+  if (lower.includes("bgp")) return "bgp";
+  if (lower.includes("ospf")) return "ospf";
+  if (lower.includes("firewall") || lower.includes("filter")) return "firewall";
+  if (lower.includes("nat")) return "nat";
+  if (lower.includes("vpn") || lower.includes("wireguard") || lower.includes("ipsec")) return "vpn";
+  if (lower.includes("queue") || lower.includes("qos") || lower.includes("bandwidth")) return "qos";
+  if (lower.includes("vlan") || lower.includes("bridge")) return "switching";
+  if (lower.includes("cpu") || lower.includes("memory") || lower.includes("performance")) return "performance";
+  if (lower.includes("dns")) return "dns";
+  if (lower.includes("script")) return "scripting";
+  return "general";
+}
+
+// Handle action confirmation
+export function confirmAction(
+  actionId: string,
+  approved: boolean
+): { success: boolean; result: string } {
+  const { getPendingActions, updateActionStatus } = require("./db");
+  const actions = getPendingActions();
+  const action = actions.find((a: ProposedAction) => a.id === actionId);
+
+  if (!action) {
+    return { success: false, result: "Accion no encontrada o ya procesada." };
   }
 
-  // Fall back to static knowledge base
-  const relevantEntries = searchKnowledge(userMessage);
-  if (relevantEntries.length > 0) {
-    const entry = relevantEntries[0];
-    let response = `**${entry.topic}** (RouterOS ${entry.routerOsVersion})\n\n${entry.content}\n\n`;
-    if (entry.codeExample) {
-      response += `\`\`\`routeros\n${entry.codeExample}\n\`\`\`\n`;
-    }
-    if (relevantEntries.length > 1) {
-      response +=
-        "\nRelated topics: " +
-        relevantEntries
-          .slice(1)
-          .map((e) => `**${e.topic}**`)
-          .join(", ");
-    }
-    return response;
+  if (!approved) {
+    updateActionStatus(actionId, "rejected", "Rejected by operator");
+    return { success: true, result: "Accion cancelada." };
   }
 
-  if (lowerMessage.includes("firewall")) {
-    return `For RouterOS v7 firewall setup, follow this security-first approach:
-
-1. **Accept established/related** connections first
-2. **Drop invalid** connections
-3. **Allow specific services** (SSH, ICMP)
-4. **Drop everything else** on input from WAN
-
-\`\`\`routeros
-/ip firewall filter
-add action=accept chain=input connection-state=established,related
-add action=drop chain=input connection-state=invalid
-add action=accept chain=input protocol=icmp
-add action=accept chain=input dst-port=22 protocol=tcp src-address=192.168.0.0/24
-add action=drop chain=input in-interface-list=WAN
-\`\`\`
-
-For performance, also use **raw rules** to drop bogon traffic before connection tracking. Want me to show you the complete firewall template?`;
+  // In demo mode, simulate execution
+  const risk = analyzeRisk(action.command);
+  if (risk.riskLevel === "high") {
+    updateActionStatus(actionId, "rejected", "Auto-rejected: high risk command requires manual execution");
+    return {
+      success: false,
+      result: "Comando de alto riesgo rechazado automaticamente. Ejecucion manual requerida via Winbox o SSH.",
+    };
   }
 
-  if (lowerMessage.includes("wireguard") || lowerMessage.includes("wg")) {
-    return `**WireGuard Setup on RouterOS v7:**
+  updateActionStatus(actionId, "executed", `Command executed successfully (simulated): ${action.command}`);
 
-\`\`\`routeros
-/interface wireguard
-add listen-port=13231 mtu=1420 name=wg0
-/ip address
-add address=10.10.10.1/24 interface=wg0 network=10.10.10.0
-/interface wireguard peers
-add allowed-address=10.10.10.2/32 interface=wg0 \\
-    public-key="CLIENT_PUBLIC_KEY_HERE"
-/ip firewall filter
-add action=accept chain=input dst-port=13231 \\
-    in-interface-list=WAN protocol=udp
-\`\`\`
+  // Record in memory
+  recordMemoryPattern(
+    `executed-${action.command.split(" ").slice(0, 3).join("-")}`,
+    `Executed: ${action.command}`,
+    "Executed by operator approval"
+  );
 
-Make sure to generate key pairs first and exchange public keys between peers. Need help with client configuration or routing through the tunnel?`;
-  }
-
-  if (lowerMessage.includes("bgp")) {
-    return `**BGP Configuration in RouterOS v7:**
-
-\`\`\`routeros
-/routing bgp template
-add as=65001 name=default router-id=1.1.1.1
-/routing bgp connection
-add disabled=no local.role=ebgp name=peer-isp \\
-    output.network=bgp-networks \\
-    remote.address=203.0.113.1.as=65000 \\
-    templates=default
-\`\`\`
-
-Key BGP tips for v7:
-- Use \`/routing bgp template\` for reusable configs
-- Always allow port 179/tcp in firewall from peers
-- Use \`/routing bgp session print\` to verify status
-
-Which BGP scenario are you working on (multi-homed, transit, IX peering)?`;
-  }
-
-  if (
-    lowerMessage.includes("queue") ||
-    lowerMessage.includes("bandwidth") ||
-    lowerMessage.includes("qos")
-  ) {
-    return `**QoS with Queue Trees (RouterOS v7):**
-
-First, mark packets with mangle:
-\`\`\`routeros
-/ip firewall mangle
-add action=mark-packet chain=prerouting \\
-    dst-port=80,443 protocol=tcp \\
-    new-packet-mark=web-pkt
-\`\`\`
-
-Then create queue trees:
-\`\`\`routeros
-/queue tree
-add max-limit=100M name=total-upload parent=global
-add max-limit=50M name=web-upload \\
-    parent=total-upload packet-mark=web-pkt
-\`\`\`
-
-For fair bandwidth distribution, use **PCQ** (Per Connection Queue):
-\`\`\`routeros
-/queue type
-add kind=pcq name=pcq-dl pcq-classifier=dst-address \\
-    pcq-rate=10M
-\`\`\`
-
-What bandwidth limits do you need to implement?`;
-  }
-
-  if (lowerMessage.includes("vpn") || lowerMessage.includes("ipsec")) {
-    return `For VPN on RouterOS v7, you have several options:
-
-1. **WireGuard** - Fastest, simplest setup (recommended)
-2. **IPsec IKEv2** - Best for site-to-site and road warrior
-3. **SSTP** - Works through firewalls (port 443)
-4. **OpenVPN** - Cross-platform compatibility
-
-Which VPN type fits your scenario? I can provide detailed configuration for any of these.
-
-For most use cases, I recommend **WireGuard** for its speed and simplicity, or **IPsec IKEv2** for enterprise compatibility.`;
-  }
-
-  if (lowerMessage.includes("vlan") || lowerMessage.includes("bridge")) {
-    return `**VLAN Configuration with Bridge Filtering (v7):**
-
-\`\`\`routeros
-/interface bridge
-add name=bridge1 vlan-filtering=yes
-/interface bridge port
-add bridge=bridge1 interface=ether2 pvid=10
-add bridge=bridge1 interface=ether3 pvid=20
-/interface bridge vlan
-add bridge=bridge1 tagged=ether1 \\
-    untagged=ether2 vlan-ids=10
-add bridge=bridge1 tagged=ether1 \\
-    untagged=ether3 vlan-ids=20
-\`\`\`
-
-Key points:
-- Use bridge VLAN filtering (not switch chip VLANs)
-- Set PVID on access ports
-- Tag trunk ports
-- Hardware offload available on CRS3xx/CRS5xx
-
-Need help with inter-VLAN routing or specific port configurations?`;
-  }
-
-  return `I can help with that. Based on your query about "${userMessage}", I'd need more specific details to provide the best RouterOS v7 configuration.
-
-Try asking about:
-- **Firewall** - Filter rules, raw rules, mangle
-- **WireGuard** - VPN setup
-- **BGP/OSPF** - Routing protocols
-- **Queue trees** - Bandwidth management
-- **VLAN** - Network segmentation
-- **Security hardening** - Best practices
-
-You can also upload an .rsc configuration file and I'll analyze it for errors and security issues.`;
+  return {
+    success: true,
+    result: `Comando ejecutado (simulado): \`\`\`routeros\n${action.command}\n\`\`\`\n\nEn produccion, esto se ejecutaria via la API de MikroTik.`,
+  };
 }

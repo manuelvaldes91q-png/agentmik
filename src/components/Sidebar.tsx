@@ -14,6 +14,7 @@ const navItems = [
 export function Sidebar() {
   const pathname = usePathname();
   const [kbStats, setKbStats] = useState({ totalChunks: 0, lastSync: null as string | null });
+  const [agentStatus, setAgentStatus] = useState({ active: false, snapshots: 0 });
 
   useEffect(() => {
     fetch("/api/docs/sync")
@@ -21,6 +22,15 @@ export function Sidebar() {
       .then((json) => {
         if (json.success) {
           setKbStats({ totalChunks: json.totalChunks, lastSync: json.lastSync });
+        }
+      })
+      .catch(() => {});
+
+    fetch("/api/monitoring")
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success) {
+          setAgentStatus({ active: json.active, snapshots: json.snapshotsCount || 0 });
         }
       })
       .catch(() => {});
@@ -37,7 +47,7 @@ export function Sidebar() {
           </div>
           <div>
             <h1 className="text-sm font-bold text-slate-100">MikroTik Expert</h1>
-            <p className="text-xs text-emerald-500 font-medium">Sentinel v1.0</p>
+            <p className="text-xs text-emerald-500 font-medium">Sentinel v2.0 CoT</p>
           </div>
         </div>
       </div>
@@ -66,13 +76,17 @@ export function Sidebar() {
 
       <div className="p-4 border-t border-slate-800">
         <div className="flex items-center gap-2 text-xs text-slate-500">
-          <div className={`w-2 h-2 rounded-full ${kbStats.totalChunks > 0 ? "bg-emerald-500" : "bg-amber-500"} animate-pulse`} />
-          <span>{kbStats.totalChunks > 0 ? `Knowledge Base: ${kbStats.totalChunks} chunks` : "Knowledge Base: 19 static entries"}</span>
+          <div className={`w-2 h-2 rounded-full ${agentStatus.active ? "bg-emerald-500" : "bg-amber-500"} animate-pulse`} />
+          <span>{agentStatus.active ? "Agente activo" : "Agente en standby"}</span>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
+          <div className={`w-2 h-2 rounded-full ${kbStats.totalChunks > 0 ? "bg-emerald-500" : "bg-slate-500"}`} />
+          <span>{kbStats.totalChunks > 0 ? `KB: ${kbStats.totalChunks} chunks` : "KB: 19 static"}</span>
         </div>
         <p className="text-xs text-slate-600 mt-1">
           {kbStats.lastSync
-            ? `Synced: ${new Date(kbStats.lastSync).toLocaleDateString()}`
-            : "Use sync to crawl MikroTik docs"}
+            ? `Docs synced: ${new Date(kbStats.lastSync).toLocaleDateString()}`
+            : "Sync docs from Dashboard"}
         </p>
       </div>
     </aside>

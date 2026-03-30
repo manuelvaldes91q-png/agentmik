@@ -1,12 +1,12 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { generateSimulatedData, formatRate, formatBytes } from "@/lib/mikrotik/connection";
+import { generateSimulatedData, formatRate } from "@/lib/mikrotik/connection";
 import { InterfaceCard } from "@/components/InterfaceCard";
 import { MetricBar } from "@/components/MetricBar";
 import { TrafficChart } from "@/components/TrafficChart";
 import { AlertItem } from "@/components/AlertItem";
-import type { InterfaceStats, SystemHealth, BgpSession, OspfNeighbor, Alert } from "@/lib/types";
+import type { BgpSession, OspfNeighbor } from "@/lib/types";
 
 interface SyncStatus {
   syncing: boolean;
@@ -14,6 +14,21 @@ interface SyncStatus {
   totalChunks: number;
   categories: string[];
   error: string | null;
+}
+
+interface MonitoringStatus {
+  active: boolean;
+  latestCpu: number;
+  latestTemp: number;
+  latestMemory: number;
+}
+
+interface PendingAction {
+  id: string;
+  command: string;
+  explanation: string;
+  riskLevel: string;
+  createdAt: string;
 }
 
 export default function DashboardPage() {
@@ -25,6 +40,13 @@ export default function DashboardPage() {
     categories: [],
     error: null,
   });
+  const [monitoring, setMonitoring] = useState<MonitoringStatus>({
+    active: false,
+    latestCpu: 0,
+    latestTemp: 0,
+    latestMemory: 0,
+  });
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -34,6 +56,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
+    // Fetch doc sync status
     fetch("/api/docs/sync")
       .then((res) => res.json())
       .then((json) => {
@@ -44,6 +67,31 @@ export default function DashboardPage() {
             totalChunks: json.totalChunks,
             categories: json.categories,
           }));
+        }
+      })
+      .catch(() => {});
+
+    // Fetch monitoring status
+    fetch("/api/monitoring")
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success) {
+          setMonitoring({
+            active: json.active,
+            latestCpu: json.latestSnapshot?.cpuLoad || 0,
+            latestTemp: json.latestSnapshot?.temperature || 0,
+            latestMemory: json.latestSnapshot?.memoryUsedPct || 0,
+          });
+        }
+      })
+      .catch(() => {});
+
+    // Fetch pending actions
+    fetch("/api/monitoring?action=actions")
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success) {
+          setPendingActions(json.pending || []);
         }
       })
       .catch(() => {});
@@ -80,6 +128,22 @@ export default function DashboardPage() {
     }
   };
 
+  const handleAction = async (actionId: string, approve: boolean) => {
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actionId, confirm: approve }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setPendingActions((prev) => prev.filter((a) => a.id !== actionId));
+      }
+    } catch {
+      // silent
+    }
+  };
+
   const memoryUsed = ((data.health.totalMemory - data.health.freeMemory) / data.health.totalMemory) * 100;
 
   return (
@@ -92,6 +156,13 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-4">
+          {/* Monitoring indicator */}
+          <div className="flex items-center gap-2 text-xs">
+            <div className={`w-2 h-2 rounded-full ${monitoring.active ? "bg-emerald-500" : "bg-amber-500"} animate-pulse`} />
+            <span className={monitoring.active ? "text-emerald-400" : "text-amber-400"}>
+              {monitoring.active ? "Monitoreo activo (60s)" : "Monitoreo inactivo"}
+            </span>
+          </div>
           <div className="flex items-center gap-2 text-xs">
             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             <span className="text-emerald-400">Live</span>
@@ -136,6 +207,51 @@ export default function DashboardPage() {
           {syncStatus.lastSync && (
             <span>Ultima sync: {new Date(syncStatus.lastSync).toLocaleString()}</span>
           )}
+        </div>
+      )}
+
+      {/* Pending Actions Alert */}
+      {pendingActions.length > 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4">
+          <h3 className="text-sm font-semibold text-amber-400 mb-3">
+            Acciones Pendientes ({pendingActions.length})
+          </h3>
+          <div className="space-y-3">
+            {pendingActions.map((action) => (
+              <div key={action.id} className="flex items-start justify-between gap-4 bg-slate-900/50 rounded-lg p-3">
+                <div className="flex-1 min-w-0">
+                  <code className="text-xs text-emerald-400 font-mono break-all">{action.command}</code>
+                  <p className="text-xs text-slate-400 mt-1">{action.explanation}</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      action.riskLevel === "high" ? "bg-red-500/20 text-red-400" :
+                      action.riskLevel === "medium" ? "bg-amber-500/20 text-amber-400" :
+                      "bg-emerald-500/20 text-emerald-400"
+                    }`}>
+                      {action.riskLevel}
+                    </span>
+                    <span className="text-xs text-slate-500">
+                      {new Date(action.createdAt).toLocaleTimeString()}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => handleAction(action.id, true)}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-medium transition-colors"
+                  >
+                    OK
+                  </button>
+                  <button
+                    onClick={() => handleAction(action.id, false)}
+                    className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs font-medium transition-colors"
+                  >
+                    Rechazar
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

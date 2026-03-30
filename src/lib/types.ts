@@ -77,3 +77,62 @@ export interface RscAnalysisResult {
   suggestions: string[];
   parsedSections: Record<string, string[]>;
 }
+
+// Agent Chain-of-Thought types
+export interface CoTStep {
+  label: string;
+  content: string;
+  type: "analysis" | "reasoning" | "hypothesis" | "action";
+}
+
+export interface AgentResponse {
+  cotSteps: CoTStep[];
+  response: string;
+  proposedAction: ProposedAction | null;
+  references: string[];
+  monitoringAlert: MonitoringAlert | null;
+}
+
+export interface ProposedAction {
+  id: string;
+  command: string;
+  explanation: string;
+  riskLevel: "low" | "medium" | "high";
+  reversible: boolean;
+  revertCommand?: string;
+  status: "pending" | "approved" | "rejected" | "executed" | "failed";
+  createdAt: string;
+  executedAt?: string;
+  result?: string;
+}
+
+export interface MonitoringAlert {
+  id: string;
+  severity: "critical" | "warning" | "info";
+  title: string;
+  detail: string;
+  source: string;
+  timestamp: string;
+  proposedCommand?: string;
+}
+
+export interface MonitoringSnapshot {
+  timestamp: string;
+  cpuLoad: number;
+  memoryUsedPct: number;
+  temperature: number;
+  bgpSessions: Array<{ name: string; status: string; prefixCount: number }>;
+  ospfNeighbors: Array<{ identity: string; state: string }>;
+  interfaceStatus: Array<{ name: string; status: string; rxRate: number; txRate: number }>;
+  anomalies: string[];
+}
+
+export interface Incident {
+  id: string;
+  timestamp: string;
+  type: string;
+  description: string;
+  resolution: string;
+  commands: string;
+  resolved: boolean;
+}
