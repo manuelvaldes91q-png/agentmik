@@ -1,5 +1,6 @@
 import { generateSimulatedData } from "./connection";
 import { fetchRealRouterData } from "./connection-server";
+import { runComprehensiveHealthCheck } from "./health-analyzer";
 import {
   saveSnapshot,
   getRecentSnapshots,
