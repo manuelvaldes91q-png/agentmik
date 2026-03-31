@@ -1,5 +1,6 @@
 import { executeCommand } from "./connection-server";
 import { loadMikroTikConfig } from "./db";
+import { runComprehensiveHealthCheck } from "./health-analyzer";
 
 interface DiagnosticResult {
   category: string;
@@ -49,6 +50,8 @@ export function detectDiagnosticIntent(message: string): string | null {
   if (l.match(/log|registro|evento|mensaje/)) return "logs";
   if (l.match(/conectividad|ping|test|prueba|internet|funciona/)) return "connectivity";
   if (l.match(/seguridad|security|ataque|ddos|brute|intruso/)) return "security";
+  if (l.match(/salud|health|check|chequeo|calificacion|nota|puntaje|score/)) return "health";
+  if (l.match(/prediccion|predice|futura|falla|problema futuro|tendencia/)) return "health";
   if (l.match(/todo|completo|general|estado|status|resumen/)) return "overview";
   return null;
 }
@@ -63,6 +66,7 @@ export async function runDiagnostic(intent: string): Promise<DiagnosticResult> {
     dns: diagnosticDNS, dhcp: diagnosticDHCP, queues: diagnosticQueues,
     logs: diagnosticLogs, connectivity: diagnosticConnectivity,
     security: diagnosticSecurity, overview: diagnosticOverview,
+    health: diagnosticHealth,
   };
   return (map[intent] || (() => Promise.resolve({ category: intent, findings: ["No reconozco ese diagnostico."], severity: "info" as const, commands: [], solution: "Prueba: firewall, interfaces, cpu, memoria, rutas, nat, dns, seguridad." })))();
 }
@@ -782,4 +786,50 @@ async function diagnosticOverview(): Promise<DiagnosticResult> {
 
   if (!s.length) s.push("Todo OK. No se detectaron problemas.");
   return { category: "Estado General", findings: f, severity: sev(f), commands: c, solution: s.join("\n") };
+}
+
+// ======================== HEALTH CHECK COMPREHENSIVE ========================
+async function diagnosticHealth(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+
+  const health = await runComprehensiveHealthCheck();
+
+  f.push(`=== CALIFICACION: ${health.grade} (${health.score}/100) ===`);
+  f.push(health.summary);
+
+  if (health.issues.length > 0) {
+    f.push("");
+    f.push("=== PROBLEMAS DETECTADOS ===");
+    for (const issue of health.issues) {
+      const icon = issue.severity === "critical" ? "CRITICO" : issue.severity === "warning" ? "ADVERTENCIA" : "INFO";
+      f.push(`[${icon}] ${issue.category}: ${issue.description}`);
+      if (issue.command) s.push(issue.command);
+    }
+  }
+
+  if (health.predictions.length > 0) {
+    f.push("");
+    f.push("=== PREDICCIONES ===");
+    for (const pred of health.predictions) {
+      f.push(`${pred.metric} ${pred.trend}: ${pred.description}`);
+      f.push(`  Tiempo estimado: ${pred.estimatedTime}`);
+      f.push(`  Accion: ${pred.action}`);
+    }
+  }
+
+  if (health.recommendations.length > 0) {
+    f.push("");
+    f.push("=== RECOMENDACIONES ===");
+    for (const rec of health.recommendations) f.push(rec);
+  }
+
+  if (!s.length) s.push("Sistema en buen estado. No se requieren acciones.");
+
+  return {
+    category: "Salud del Sistema",
+    findings: f,
+    severity: health.score < 50 ? "critical" : health.score < 70 ? "warning" : "info",
+    commands: c,
+    solution: s.join("\n"),
+  };
 }
