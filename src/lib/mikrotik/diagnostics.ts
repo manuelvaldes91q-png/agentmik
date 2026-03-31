@@ -21,351 +21,687 @@ async function runCmd(command: string, params: string[] = []): Promise<{ result:
   return { result: [], error: errMsg, commands: [fullCmd] };
 }
 
-function formatBytes(bytes: number): string {
+function fmt(bytes: number): string {
   if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
   if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(0)} MB`;
   if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(0)} KB`;
   return `${bytes} B`;
 }
 
+function sev(f: string[]): "info" | "warning" | "critical" {
+  if (f.some(x => x.includes("PELIGRO") || x.includes("CRITICO"))) return "critical";
+  if (f.some(x => x.includes("PROBLEMA"))) return "critical";
+  if (f.some(x => x.includes("ADVERTENCIA") || x.includes("ALERTA"))) return "warning";
+  return "info";
+}
+
 export function detectDiagnosticIntent(message: string): string | null {
-  const lower = message.toLowerCase();
-  if (lower.match(/firewall|filtro|filter|regla|bloqueo|bloquear|drop|accept/)) return "firewall";
-  if (lower.match(/interfaz|interface|ethernet|ether|puerto|link|conexion fisica/)) return "interfaces";
-  if (lower.match(/cpu|procesador|lento|rendimiento|performance|saturado|carga/)) return "cpu";
-  if (lower.match(/memoria|ram|memory|almacenamiento/)) return "memory";
-  if (lower.match(/ruta|route|routing|gateway|enrutamiento|navegacion/)) return "routes";
-  if (lower.match(/nat|masquerade|src-nat|dst-nat|port forward/)) return "nat";
-  if (lower.match(/dns|resolucion|resolver/)) return "dns";
-  if (lower.match(/dhcp|ip dinamica|lease/)) return "dhcp";
-  if (lower.match(/queue|cola|bandwidth|ancho de banda|limitar|qos/)) return "queues";
-  if (lower.match(/log|registro|evento|mensaje/)) return "logs";
-  if (lower.match(/conectividad|ping|test|prueba|internet|funciona/)) return "connectivity";
-  if (lower.match(/seguridad|security|ataque|ddos|brute|intruso/)) return "security";
-  if (lower.match(/todo|completo|general|estado|status|resumen/)) return "overview";
+  const l = message.toLowerCase();
+  if (l.match(/firewall|filtro|filter|regla|bloqueo|drop|accept/)) return "firewall";
+  if (l.match(/interfaz|interface|ethernet|ether|puerto|link|conexion fisica/)) return "interfaces";
+  if (l.match(/cpu|procesador|lento|rendimiento|performance|saturado/)) return "cpu";
+  if (l.match(/memoria|ram|memory|almacenamiento/)) return "memory";
+  if (l.match(/ruta|route|routing|gateway|enrutamiento/)) return "routes";
+  if (l.match(/nat|masquerade|src-nat|dst-nat|port forward/)) return "nat";
+  if (l.match(/dns|resolucion|resolver/)) return "dns";
+  if (l.match(/dhcp|ip dinamica|lease/)) return "dhcp";
+  if (l.match(/queue|cola|bandwidth|ancho de banda|limitar|qos/)) return "queues";
+  if (l.match(/log|registro|evento|mensaje/)) return "logs";
+  if (l.match(/conectividad|ping|test|prueba|internet|funciona/)) return "connectivity";
+  if (l.match(/seguridad|security|ataque|ddos|brute|intruso/)) return "security";
+  if (l.match(/todo|completo|general|estado|status|resumen/)) return "overview";
   return null;
 }
 
 export async function runDiagnostic(intent: string): Promise<DiagnosticResult> {
   const config = loadMikroTikConfig();
-  if (!config) {
-    return { category: intent, findings: ["No hay configuracion. Ve a /settings."], severity: "critical", commands: [], solution: "Configura tu router en /settings." };
-  }
+  if (!config) return { category: intent, findings: ["No hay configuracion. Ve a /settings."], severity: "critical", commands: [], solution: "Configura tu router en /settings." };
   console.log(`[Diagnostic] ${intent} en ${config.ip}:${config.port}`);
-  switch (intent) {
-    case "firewall": return await diagnosticFirewall();
-    case "interfaces": return await diagnosticInterfaces();
-    case "cpu": return await diagnosticCPU();
-    case "memory": return await diagnosticMemory();
-    case "routes": return await diagnosticRoutes();
-    case "nat": return await diagnosticNAT();
-    case "dns": return await diagnosticDNS();
-    case "dhcp": return await diagnosticDHCP();
-    case "queues": return await diagnosticQueues();
-    case "logs": return await diagnosticLogs();
-    case "connectivity": return await diagnosticConnectivity();
-    case "security": return await diagnosticSecurity();
-    case "overview": return await diagnosticOverview();
-    default: return { category: intent, findings: ["No reconozco ese diagnostico."], severity: "info", commands: [], solution: "Prueba: firewall, interfaces, cpu, memoria, rutas, nat, dns, seguridad, estado general." };
-  }
+  const map: Record<string, () => Promise<DiagnosticResult>> = {
+    firewall: diagnosticFirewall, interfaces: diagnosticInterfaces, cpu: diagnosticCPU,
+    memory: diagnosticMemory, routes: diagnosticRoutes, nat: diagnosticNAT,
+    dns: diagnosticDNS, dhcp: diagnosticDHCP, queues: diagnosticQueues,
+    logs: diagnosticLogs, connectivity: diagnosticConnectivity,
+    security: diagnosticSecurity, overview: diagnosticOverview,
+  };
+  return (map[intent] || (() => Promise.resolve({ category: intent, findings: ["No reconozco ese diagnostico."], severity: "info" as const, commands: [], solution: "Prueba: firewall, interfaces, cpu, memoria, rutas, nat, dns, seguridad." })))();
 }
 
-// ============ DIAGNOSTICS ============
-
+// ======================== FIREWALL ========================
 async function diagnosticFirewall(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
+  const f: string[] = [], s: string[] = [], c: string[] = [];
   const cmd = await runCmd("/ip/firewall/filter/print");
   c.push(...cmd.commands);
   if (cmd.error) return { category: "Firewall", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion y permisos." };
-  if (cmd.result.length === 0) return { category: "Firewall", findings: ["Sin reglas. Router ABIERTO."], severity: "critical", commands: c, solution: "/ip firewall filter\nadd action=accept chain=input connection-state=established,related\nadd action=drop chain=input connection-state=invalid\nadd action=drop chain=input in-interface=ether1" };
 
-  // Analyze each rule in detail
   const rules = cmd.result;
-  const inputRules = rules.filter(r => (r.chain || "input") === "input");
-  const forwardRules = rules.filter(r => r.chain === "forward");
-  const outputRules = rules.filter(r => r.chain === "output");
+  if (rules.length === 0) {
+    return { category: "Firewall", findings: ["CRITICO: Sin reglas. Router ABIERTO."], severity: "critical", commands: c,
+      solution: "EJECUTA ESTO AHORA:\n/ip firewall filter add action=accept chain=input connection-state=established,related\n/ip firewall filter add action=drop chain=input connection-state=invalid\n/ip firewall filter add action=accept chain=input protocol=icmp limit=50,5:packet\n/ip firewall filter add action=drop chain=input" };
+  }
 
-  // Count by action
-  const accepts = rules.filter(r => r.action === "accept");
-  const drops = rules.filter(r => r.action === "drop");
-  const rejects = rules.filter(r => r.action === "reject");
-  const logs = rules.filter(r => r.action === "log");
-  const jumps = rules.filter(r => r.action === "jump");
+  const input = rules.filter(r => (r.chain || "input") === "input");
+  const forward = rules.filter(r => r.chain === "forward");
+  f.push(`${rules.length} reglas: ${input.length} input, ${forward.length} forward`);
 
-  f.push(`=== RESUMEN: ${rules.length} reglas ===`);
-  f.push(`Input: ${inputRules.length} | Forward: ${forwardRules.length} | Output: ${outputRules.length}`);
-  f.push(`Accept: ${accepts.length} | Drop: ${drops.length} | Reject: ${rejects.length} | Log: ${logs.length}`);
+  // Orden critico
+  const first = input[0];
+  const hasEst = first && (first["connection-state"] || "").includes("established");
+  f.push(hasEst ? "OK: Primera regla = established/related" : "PROBLEMA: Primera regla NO es established/related. Esto causa alta CPU.");
+  if (!hasEst) s.push(`/ip firewall filter move [find connection-state~"established"] 0`);
 
-  // Analyze INPUT chain order
-  f.push("");
-  f.push("=== ANALISIS CHAIN INPUT ===");
+  const dropInv = input.findIndex(r => r.action === "drop" && (r["connection-state"] || "").includes("invalid"));
+  if (dropInv === -1) { f.push("PROBLEMA: Sin drop invalid."); s.push("/ip firewall filter add action=drop chain=input connection-state=invalid place-after=[find connection-state~\"established\"]"); }
+  else if (dropInv > 2) f.push(`ADVERTENCIA: Drop invalid en pos ${dropInv} (deberia ser 1-2)`);
 
-  // Check 1: First rule should be established/related
-  const firstInput = inputRules[0];
-  if (firstInput) {
-    const state = firstInput["connection-state"] || "";
-    if (state.includes("established") || state.includes("related")) {
-      f.push("OK: Primera regla acepta established/related");
+  // Puertos abiertos
+  const dangerousPorts = input.filter(r => r.action === "accept" && r["dst-port"] && !r["src-address"]);
+  for (const r of dangerousPorts) {
+    const port = r["dst-port"] || "";
+    if (port.match(/22|8291|23|21|80|443/)) {
+      f.push(`PELIGRO: Puerto ${port} (${r.protocol || "tcp"}) aceptado sin restriccion de IP.`);
+      s.push(`/ip firewall filter set ${r[".id"] || "[find dst-port=\"" + port + "\"]"} src-address=TU_IP_PUBLICA`);
+    }
+  }
+
+  // ICMP sin limite
+  const icmpBad = input.find(r => r.protocol === "icmp" && r.action === "accept" && !r["limit"]);
+  if (icmpBad) { f.push("ADVERTENCIA: ICMP sin limite."); s.push("/ip firewall filter add action=accept chain=input protocol=icmp limit=50,5:packet"); }
+
+  // Drop final
+  const last = input[input.length - 1];
+  if (last && last.action !== "drop") { f.push("PROBLEMA: Ultima regla NO es drop."); s.push("/ip firewall filter add action=drop chain=input comment=\"Drop all\""); }
+
+  if (!s.length) s.push("Firewall bien configurado. No se requieren cambios.");
+
+  return { category: "Firewall", findings: f, severity: sev(f), commands: c, solution: s.map((x,i) => x.startsWith("/") ? `SOLUCION #${i+1}:\n  ${x}` : x).join("\n\n") };
+}
+
+// ======================== INTERFACES ========================
+async function diagnosticInterfaces(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+  const cmd = await runCmd("/interface/print");
+  c.push(...cmd.commands);
+  if (cmd.error) return { category: "Interfaces", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
+
+  for (const i of cmd.result) {
+    const st = i.running === "true" ? "UP" : "DOWN";
+    const rx = parseInt(i["rx-byte"] || "0"), tx = parseInt(i["tx-byte"] || "0");
+    const rxE = parseInt(i["rx-errors"] || "0"), txE = parseInt(i["tx-errors"] || "0");
+    const rxD = parseInt(i["rx-drops"] || "0"), txD = parseInt(i["tx-drops"] || "0");
+
+    f.push(`${i.name}: ${st} | RX ${fmt(rx)} TX ${fmt(tx)}`);
+    if (rxE > 0 || txE > 0) { f.push(`  PROBLEMA: ${rxE} errores RX, ${txE} errores TX - cable o SFP dañado`); s.push(`/interface ethernet monitor ${i.name} once`); }
+    if (rxD > 1000 || txD > 1000) { f.push(`  ALERTA: ${rxD} drops RX, ${txD} drops TX - posible saturacion`); s.push(`Revisa queues y limita trafico en ${i.name}`); }
+  }
+
+  const down = cmd.result.filter(i => i.running !== "true" && !i.name.includes("bridge"));
+  if (down.length > 0) { f.push(`Interfaces caidas: ${down.map(i => i.name).join(", ")}`); s.push("Verifica cables y configuracion de las interfaces caidas."); }
+
+  // MTU check
+  const mtuIssues = cmd.result.filter(i => i.mtu && parseInt(i.mtu) < 1500 && i.type === "ether");
+  for (const i of mtuIssues) { f.push(`ADVERTENCIA: ${i.name} MTU=${i.mtu} (default 1500). Puede causar fragmentacion.`); s.push(`/interface ethernet set ${i.name} mtu=1500`); }
+
+  if (!s.length) s.push("Interfaces OK. No se detectaron problemas.");
+  return { category: "Interfaces", findings: f, severity: sev(f), commands: c, solution: s.join("\n\n") };
+}
+
+// ======================== CPU ========================
+async function diagnosticCPU(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+  const resCmd = await runCmd("/system/resource/print");
+  c.push(...resCmd.commands);
+  if (resCmd.error) return { category: "CPU", findings: [`Error: ${resCmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
+
+  const res = resCmd.result[0];
+  const cpu = parseInt(res["cpu-load"] || "0");
+  f.push(`CPU: ${cpu}% | Uptime: ${res.uptime} | RouterOS: ${res.version}`);
+
+  if (cpu > 90) {
+    f.push("CRITICO: CPU > 90%. El router puede dejar de responder.");
+    s.push("PASO 1: Identifica el proceso: /tool profile duration=15");
+    s.push("PASO 2: Si es firewall, reordena reglas (established primero)");
+    s.push("PASO 3: Si es routing, reduce prefijos BGP: /routing bgp peer set [find] prefix-limit=100000");
+    s.push("PASO 4: Si es networking, revisa conexiones: /ip firewall connection print count-only");
+  } else if (cpu > 70) {
+    f.push("ADVERTENCIA: CPU > 70%.");
+    s.push("Ejecuta /tool profile duration=15 para ver que proceso consume CPU.");
+    s.push("Revisa si hay muchas conexiones: /ip firewall connection print count-only");
+  } else if (cpu > 40) {
+    f.push("CPU moderada. Normal para la mayoria de configuraciones.");
+    s.push("CPU estable. No se requiere accion.");
+  } else {
+    f.push("CPU baja. Router con recursos disponibles.");
+    s.push("CPU optima.");
+  }
+
+  // Firewall stats impact
+  const fwCmd = await runCmd("/ip/firewall/filter/print", ["=count-only"]);
+  c.push(...fwCmd.commands);
+  if (!fwCmd.error && fwCmd.result.length > 0) {
+    const count = fwCmd.result.length;
+    f.push(`Reglas firewall: ${count}`);
+    if (count > 100) { f.push("ADVERTENCIA: Muchas reglas firewall. Cada paquete pasa por todas."); s.push("Usa address-lists y jump rules para reducir procesamiento."); }
+  }
+
+  return { category: "CPU", findings: f, severity: cpu > 90 ? "critical" : cpu > 70 ? "warning" : "info", commands: c, solution: s.join("\n") };
+}
+
+// ======================== MEMORY ========================
+async function diagnosticMemory(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+  const resCmd = await runCmd("/system/resource/print");
+  c.push(...resCmd.commands);
+  if (resCmd.error) return { category: "Memoria", findings: [`Error: ${resCmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
+
+  const res = resCmd.result[0];
+  const free = parseInt(res["free-memory"] || "0"), total = parseInt(res["total-memory"] || "0");
+  const used = total - free, pct = total > 0 ? (used / total * 100) : 0;
+
+  f.push(`RAM: ${fmt(free)} libre / ${fmt(total)} total (${pct.toFixed(0)}% usado)`);
+
+  if (pct > 95) {
+    f.push("CRITICO: Memoria casi agotada. Riesgo de reinicio.");
+    s.push("PASO 1: Revisa paquetes: /system package print");
+    s.push("PASO 2: Deshabilita innecesarios: /system package disable hotspot,mls,ppp,wireless");
+    s.push("PASO 3: Reinicia: /system reboot");
+  } else if (pct > 80) {
+    f.push("ADVERTENCIA: Memoria > 80%.");
+    s.push("Revisa paquetes: /system package print");
+    s.push("Deshabilita los que no uses: /system package disable <nombre>");
+  } else if (pct > 60) {
+    f.push("Memoria moderada.");
+    s.push("Memoria OK. Monitorea periodicamente.");
+  } else {
+    f.push("Memoria baja. Recursos disponibles.");
+    s.push("RAM optima.");
+  }
+
+  // BGP full table uses a lot of RAM
+  const bgpCmd = await runCmd("/routing/bgp/peer/print");
+  c.push(...bgpCmd.commands);
+  if (!bgpCmd.error) {
+    const fullTable = bgpCmd.result.filter(p => parseInt(p["prefix-count"] || "0") > 10000);
+    if (fullTable.length > 0) {
+      f.push("ALERTA: BGP con full route table consume mucha RAM.");
+      s.push("Limita prefijos: /routing bgp peer set [find] prefix-limit=100000");
+    }
+  }
+
+  return { category: "Memoria", findings: f, severity: pct > 95 ? "critical" : pct > 80 ? "warning" : "info", commands: c, solution: s.join("\n") };
+}
+
+// ======================== ROUTES ========================
+async function diagnosticRoutes(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+  const cmd = await runCmd("/ip/route/print");
+  c.push(...cmd.commands);
+  if (cmd.error) return { category: "Rutas", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
+
+  const routes = cmd.result;
+  const defaults = routes.filter(r => r["dst-address"] === "0.0.0.0/0");
+  const staticR = routes.filter(r => r["static"] === "true");
+  const dynamic = routes.filter(r => r["dynamic"] === "true");
+  const unreachable = routes.filter(r => r["unreachable"] === "true");
+
+  f.push(`Rutas: ${routes.length} total (${staticR.length} estaticas, ${dynamic.length} dinamicas)`);
+  f.push(`Default routes: ${defaults.length}`);
+
+  for (const d of defaults) {
+    const active = d["active"] === "true" ? "ACTIVA" : "INACTIVA";
+    const distance = d["distance"] || "?";
+    f.push(`  Via ${d.gateway} (${active}, distance=${distance}, ${d["routing-mark"] || "main"})`);
+  }
+
+  if (defaults.length === 0) {
+    f.push("CRITICO: Sin ruta default. No hay internet.");
+    s.push("/ip route add dst-address=0.0.0.0/0 gateway=IP_DE_TU_GATEWAY");
+  } else if (defaults.length === 1) {
+    const d = defaults[0];
+    if (d["active"] !== "true") {
+      f.push("PROBLEMA: Ruta default INACTIVA. Gateway inalcanzable.");
+      s.push("Verifica que el gateway responda: /ping " + (d.gateway || "GATEWAY") + " count=3");
     } else {
-      f.push("PROBLEMA: Primera regla NO acepta established/related.");
-      f.push(`  Actual: action=${firstInput.action} chain=${firstInput.chain} ${firstInput["connection-state"] ? "state=" + firstInput["connection-state"] : ""}`);
+      s.push("Ruta default OK.");
     }
-  }
-
-  // Check 2: Drop invalid should be early
-  const dropInvalidIdx = inputRules.findIndex(r => r.action === "drop" && (r["connection-state"] || "").includes("invalid"));
-  if (dropInvalidIdx === -1) {
-    f.push("PROBLEMA: No hay drop para conexiones invalidas.");
-  } else if (dropInvalidIdx <= 2) {
-    f.push("OK: Drop invalid en posicion correcta");
   } else {
-    f.push(`ADVERTENCIA: Drop invalid en posicion ${dropInvalidIdx} (deberia ser 1-2)`);
+    f.push("Multiples default routes detectadas. Verifica failover:");
+    for (const d of defaults) f.push(`  distance=${d["distance"] || "?"} via ${d.gateway}`);
+    s.push("Para failover, asegurate que las distancias sean diferentes (10, 20, etc).");
   }
 
-  // Check 3: ICMP should be limited
-  const icmpRules = inputRules.filter(r => r.protocol === "icmp");
-  if (icmpRules.length === 0) {
-    f.push("ADVERTENCIA: No hay regla para ICMP (ping). Puede fallar diagnostico.");
+  if (unreachable.length > 0) {
+    f.push(`ALERTA: ${unreachable.length} rutas inalcanzables.`);
+    s.push("Revisa gateways de rutas inalcanzables: /ip route print where unreachable=yes");
+  }
+
+  // Check for recursive routing
+  const recursive = routes.filter(r => r["check-gateway"] === "ping");
+  if (recursive.length > 0) f.push(`Rutas con check-gateway=ping: ${recursive.length} (failover activo)`);
+
+  return { category: "Rutas", findings: f, severity: defaults.length === 0 ? "critical" : defaults.some(d => d["active"] !== "true") ? "warning" : "info", commands: c, solution: s.join("\n") };
+}
+
+// ======================== NAT ========================
+async function diagnosticNAT(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+  const cmd = await runCmd("/ip/firewall/nat/print");
+  c.push(...cmd.commands);
+  if (cmd.error) return { category: "NAT", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
+
+  const rules = cmd.result;
+  const masq = rules.filter(r => r.action === "masquerade");
+  const srcNat = rules.filter(r => r.action === "src-nat");
+  const dstNat = rules.filter(r => r.action === "dst-nat");
+
+  f.push(`NAT: ${rules.length} reglas (${masq.length} masquerade, ${srcNat.length} src-nat, ${dstNat.length} dst-nat/port-forward)`);
+
+  if (masq.length === 0 && srcNat.length === 0) {
+    f.push("CRITICO: Sin NAT. Los clientes LAN no tendran internet.");
+    s.push("/ip firewall nat add action=masquerade chain=srcnat out-interface=ether1 comment=\"NAT principal\"");
   } else {
-    const icmpAccept = icmpRules.find(r => r.action === "accept");
-    if (icmpAccept && !icmpAccept["limit"]) {
-      f.push("ADVERTENCIA: ICMP aceptado sin limite. Agregar limit=50/5s para evitar flood.");
+    for (const m of masq) {
+      const iface = m["out-interface"] || m["out-interface-list"] || "?";
+      f.push(`  Masquerade en: ${iface}`);
     }
   }
 
-  // Check 4: SSH/Winbox should be restricted
-  const sshRules = inputRules.filter(r => r["dst-port"]?.includes("22") || r["dst-port"]?.includes("8291"));
-  for (const r of sshRules) {
-    if (r.action === "accept" && !r["src-address"]) {
-      f.push(`PELIGRO: Puerto ${r["dst-port"]} aceptado sin restriccion de IP.`);
+  if (dstNat.length > 0) {
+    f.push("Port forwards configurados:");
+    for (const r of dstNat) {
+      const port = r["dst-port"] || "?";
+      const to = r["to-addresses"] || "?";
+      const toPort = r["to-ports"] || port;
+      f.push(`  Puerto ${port} -> ${to}:${toPort} (${r.protocol || "tcp"})`);
+    }
+    // Check if ports are also allowed in firewall forward
+    const fwCmd = await runCmd("/ip/firewall/filter/print");
+    c.push(...fwCmd.commands);
+    if (!fwCmd.error) {
+      for (const r of dstNat) {
+        const port = r["dst-port"] || "";
+        const fwRule = fwCmd.result.find(fr => fr["dst-port"]?.includes(port) && fr.action === "accept");
+        if (!fwRule) {
+          f.push(`PROBLEMA: Puerto ${port} tiene NAT pero NO firewall forward. El trafico sera dropeado.`);
+          s.push(`/ip firewall filter add action=accept chain=forward dst-address=${r["to-addresses"] || "IP_INTERNA"} dst-port=${port} protocol=${r.protocol || "tcp"}`);
+        }
+      }
     }
   }
 
-  // Check 5: Last rule in input should be drop
-  const lastInput = inputRules[inputRules.length - 1];
-  if (lastInput) {
-    if (lastInput.action === "drop" && !lastInput["src-address"] && !lastInput["dst-port"]) {
-      f.push("OK: Ultima regla input es drop general");
-    } else if (lastInput.action !== "drop") {
-      f.push("PROBLEMA: Ultima regla input NO es drop. Trafico no autorizado puede pasar.");
-    }
+  // Hairpin NAT check
+  const hairpin = rules.find(r => r.action === "masquerade" && r["src-address"]?.includes("192.168"));
+  if (dstNat.length > 0 && !hairpin) {
+    f.push("ADVERTENCIA: No se detecta hairpin NAT. Los clientes LAN no podran acceder a port forwards por IP publica.");
+    s.push("/ip firewall nat add action=masquerade chain=srcnat src-address=192.168.1.0/24 dst-address=192.168.1.0/24");
   }
 
-  // Check 6: WAN interface protection
-  const wanDrop = inputRules.find(r => r.action === "drop" && r["in-interface"] && !r["in-interface"].includes("bridge"));
-  if (!wanDrop) {
-    f.push("ADVERTENCIA: No se detecta drop especifico por interfaz WAN.");
-  }
+  if (!s.length) s.push("NAT correctamente configurado.");
+  return { category: "NAT", findings: f, severity: sev(f), commands: c, solution: s.join("\n") };
+}
 
-  // Analyze FORWARD chain
-  f.push("");
-  f.push("=== ANALISIS CHAIN FORWARD ===");
-  if (forwardRules.length === 0) {
-    f.push("INFO: Sin reglas forward. El router no filtra trafico entre LAN/WAN.");
+// ======================== DNS ========================
+async function diagnosticDNS(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+  const cmd = await runCmd("/ip/dns/print");
+  c.push(...cmd.commands);
+  if (cmd.error) return { category: "DNS", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
+
+  const dns = cmd.result[0];
+  const servers = dns?.servers || "No configurado";
+  const cache = dns?.["cache-size"] || "?";
+  const remote = dns?.["allow-remote-requests"] || "no";
+
+  f.push(`DNS servers: ${servers}`);
+  f.push(`Cache: ${cache} | Requests remotos: ${remote}`);
+
+  if (servers === "No configurado" || !servers) {
+    f.push("CRITICO: Sin DNS. No se podran resolver nombres.");
+    s.push("/ip dns set servers=8.8.8.8,8.8.4.4 allow-remote-requests=yes");
   } else {
-    const fwdDrop = forwardRules.filter(r => r.action === "drop");
-    const fwdAccept = forwardRules.filter(r => r.action === "accept");
-    f.push(`Forward: ${fwdAccept.length} accept, ${fwdDrop.length} drop`);
+    // Check if DNS servers respond
+    const pingCmd = await runCmd("/ping", ["=address=8.8.8.8", "=count=1"]);
+    c.push(...pingCmd.commands);
+    if (pingCmd.error) {
+      f.push("PROBLEMA: No se puede alcanzar DNS 8.8.8.8. Sin internet o DNS caido.");
+      s.push("Verifica conectividad: /ping 8.8.8.8");
+    }
   }
 
-  // Check connection count
+  if (remote === "yes") {
+    // Check if DNS is restricted by firewall
+    const fwCmd = await runCmd("/ip/firewall/filter/print");
+    c.push(...fwCmd.commands);
+    if (!fwCmd.error) {
+      const dnsAccept = fwCmd.result.find(r => r["dst-port"]?.includes("53") && r.action === "accept");
+      if (!dnsAccept) {
+        f.push("ADVERTENCIA: DNS acepta requests remotos pero no hay regla firewall para puerto 53.");
+      }
+    }
+  }
+
+  // Static DNS entries
+  const staticCmd = await runCmd("/ip/dns/static/print");
+  c.push(...staticCmd.commands);
+  if (!staticCmd.error) f.push(`DNS estaticos: ${staticCmd.result.length} entradas`);
+
+  if (!s.length) s.push("DNS OK.");
+  return { category: "DNS", findings: f, severity: sev(f), commands: c, solution: s.join("\n") };
+}
+
+// ======================== DHCP ========================
+async function diagnosticDHCP(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+  const cmd = await runCmd("/ip/dhcp-server/print");
+  c.push(...cmd.commands);
+  if (cmd.error) return { category: "DHCP", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
+
+  if (cmd.result.length === 0) {
+    f.push("CRITICO: No hay DHCP server. Los clientes no obtendran IP automaticamente.");
+    s.push("Configura DHCP: /ip dhcp-server setup");
+    return { category: "DHCP", findings: f, severity: "critical", commands: c, solution: s.join("\n") };
+  }
+
+  for (const srv of cmd.result) {
+    const disabled = srv.disabled === "true";
+    f.push(`${srv.name}: interface=${srv.interface}, pool=${srv["address-pool"]}, ${disabled ? "DESHABILITADO" : "activo"}`);
+    if (disabled) s.push(`/ip/dhcp-server enable ${srv.name}`);
+  }
+
+  // Check leases
+  const leaseCmd = await runCmd("/ip/dhcp-server/lease/print");
+  c.push(...leaseCmd.commands);
+  if (!leaseCmd.error) {
+    const active = leaseCmd.result.filter(l => l.status === "bound");
+    f.push(`Leases: ${active.length} activos de ${leaseCmd.result.length} total`);
+  }
+
+  // Check network config
+  const netCmd = await runCmd("/ip/dhcp-server/network/print");
+  c.push(...netCmd.commands);
+  if (!netCmd.error) {
+    for (const net of netCmd.result) {
+      const gw = net.gateway || "SIN GATEWAY";
+      const dns = net.dns || net["dns-server"] || "SIN DNS";
+      f.push(`Red ${net.address}: gateway=${gw}, dns=${dns}`);
+      if (!net.gateway) s.push(`/ip/dhcp-server/network set ${net[".id"] || "[find]"} gateway=IP_ROUTER`);
+      if (!net.dns && !net["dns-server"]) s.push(`/ip/dhcp-server/network set ${net[".id"] || "[find]"} dns-server=IP_ROUTER`);
+    }
+  }
+
+  if (!s.length) s.push("DHCP OK.");
+  return { category: "DHCP", findings: f, severity: sev(f), commands: c, solution: s.join("\n") };
+}
+
+// ======================== QUEUES ========================
+async function diagnosticQueues(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+  const cmd = await runCmd("/queue/simple/print");
+  c.push(...cmd.commands);
+  if (cmd.error) return { category: "Queues", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
+
+  if (cmd.result.length === 0) {
+    f.push("Sin queues. Ancho de banda sin control.");
+    s.push("Para limitar usuarios:\n  /queue simple add max-limit=10M/10M name=clientes target=192.168.1.0/24");
+    s.push("Para PCQ (distribucion equitativa):\n  /queue type add name=pcq-down kind=pcq pcq-classifier=dst-address pcq-rate=5M\n  /queue type add name=pcq-up kind=pcq pcq-classifier=src-address pcq-rate=5M\n  /queue simple add name=clientes target=192.168.1.0/24 queue=pcq-up/pcq-down");
+  } else {
+    f.push(`Queues: ${cmd.result.length}`);
+    for (const q of cmd.result) {
+      const limit = q["max-limit"] || "sin limite";
+      f.push(`  ${q.name}: ${limit} -> ${q.target || "?"}`);
+      if (limit === "sin limite") s.push(`Queue "${q.name}" sin limite. Agrega: /queue simple set ${q[".id"] || "[find name=\"" + q.name + "\"]"} max-limit=10M/10M`);
+    }
+  }
+
+  // Check queue tree
+  const treeCmd = await runCmd("/queue/tree/print");
+  c.push(...treeCmd.commands);
+  if (!treeCmd.error && treeCmd.result.length > 0) {
+    f.push(`Queue trees: ${treeCmd.result.length}`);
+  }
+
+  if (!s.length) s.push("Queues OK.");
+  return { category: "Queues", findings: f, severity: "info", commands: c, solution: s.join("\n") };
+}
+
+// ======================== LOGS ========================
+async function diagnosticLogs(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+  const cmd = await runCmd("/log/print", ["=.proplist=time,message,topics", "=limit=20"]);
+  c.push(...cmd.commands);
+  if (cmd.error) return { category: "Logs", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
+
+  const logs = cmd.result;
+  const errors = logs.filter(l => l.topics?.includes("error") || l.topics?.includes("critical"));
+  const warnings = logs.filter(l => l.topics?.includes("warning"));
+  const info = logs.filter(l => l.topics?.includes("info"));
+
+  f.push(`Ultimos ${logs.length} logs: ${errors.length} errores, ${warnings.length} warnings, ${info.length} info`);
+
+  if (errors.length > 0) {
+    f.push("=== ERRORES ===");
+    for (const l of errors) f.push(`[${l.time}] ${l.message}`);
+    s.push("Revisa los errores mostrados. Ejecuta /log print topics=error para mas detalles.");
+  }
+
+  if (warnings.length > 0) {
+    f.push("=== WARNINGS ===");
+    for (const l of warnings.slice(0, 5)) f.push(`[${l.time}] ${l.message}`);
+  }
+
+  // Check for common patterns
+  const loginFails = logs.filter(l => l.message?.includes("login failure"));
+  if (loginFails.length > 5) {
+    f.push(`ALERTA: ${loginFails.length} intentos de login fallidos. Posible brute force.`);
+    s.push("/ip firewall filter add action=add-src-to-address-list chain=input connection-limit=3/30s dst-port=22 protocol=tcp address-list=brute-force address-list-timeout=1d");
+    s.push("/ip firewall filter add action=drop chain=input src-address-list=brute-force");
+  }
+
+  if (!s.length) s.push("Logs limpios.");
+  return { category: "Logs", findings: f, severity: errors.length > 0 ? "warning" : "info", commands: c, solution: s.join("\n") };
+}
+
+// ======================== CONNECTIVITY ========================
+async function diagnosticConnectivity(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+
+  // Get gateway
+  const rtCmd = await runCmd("/ip/route/print");
+  c.push(...rtCmd.commands);
+  const defRoute = rtCmd.result.find(r => r["dst-address"] === "0.0.0.0/0" && r["active"] === "true");
+
+  if (!defRoute) {
+    f.push("CRITICO: Sin ruta default activa.");
+    s.push("Agrega ruta: /ip route add dst-address=0.0.0.0/0 gateway=IP_DE_TU_GATEWAY");
+    return { category: "Conectividad", findings: f, severity: "critical", commands: c, solution: s.join("\n") };
+  }
+
+  const gw = defRoute.gateway;
+  f.push(`Gateway activo: ${gw}`);
+
+  // Ping gateway
+  const gwPing = await runCmd("/ping", [`=address=${gw}`, "=count=3"]);
+  c.push(...gwPing.commands);
+  if (gwPing.error) { f.push("PROBLEMA: Gateway NO responde."); s.push("Verifica conexion fisica al gateway."); }
+  else f.push("OK: Gateway responde.");
+
+  // Ping internet
+  const inetPing = await runCmd("/ping", ["=address=8.8.8.8", "=count=3"]);
+  c.push(...inetPing.commands);
+  if (inetPing.error) {
+    f.push("PROBLEMA: Sin internet (8.8.8.8 no responde).");
+    s.push("Diagnostico paso a paso:");
+    s.push("  1. Verifica NAT: /ip firewall nat print");
+    s.push("  2. Verifica firewall: /ip firewall filter print");
+    s.push("  3. Verifica DNS: /ip dns print");
+  } else {
+    f.push("OK: Internet accesible.");
+  }
+
+  // Ping DNS
+  const dnsPing = await runCmd("/ping", ["=address=1.1.1.1", "=count=2"]);
+  c.push(...dnsPing.commands);
+  if (dnsPing.error) f.push("ADVERTENCIA: 1.1.1.1 no responde. DNS alternativo caido.");
+
+  // Check connection tracking
   const connCmd = await runCmd("/ip/firewall/connection/print", ["=count-only"]);
   c.push(...connCmd.commands);
-  if (!connCmd.error && connCmd.result.length > 0) {
-    const connCount = parseInt(JSON.stringify(connCmd.result[0])) || 0;
-    f.push(`Conexiones activas: ${connCount}`);
-    if (connCount > 5000) f.push("ALERTA: Muchas conexiones. Posible DDoS.");
+  if (!connCmd.error) f.push(`Conexiones activas: ${connCmd.result.length}`);
+
+  if (!s.length) s.push("Conectividad OK.");
+  return { category: "Conectividad", findings: f, severity: sev(f), commands: c, solution: s.join("\n") };
+}
+
+// ======================== SECURITY ========================
+async function diagnosticSecurity(): Promise<DiagnosticResult> {
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+
+  // Services
+  const svcCmd = await runCmd("/ip/service/print");
+  c.push(...svcCmd.commands);
+  if (!svcCmd.error) {
+    f.push("=== SERVICIOS ===");
+    for (const svc of svcCmd.result) {
+      if (svc.disabled !== "true") {
+        const addr = svc.address || "ABIERTO A TODOS";
+        f.push(`  ${svc.name} puerto ${svc.port}: ${addr}`);
+      }
+    }
+    const telnet = svcCmd.result.find(x => x.name === "telnet" && x.disabled !== "true");
+    const ftp = svcCmd.result.find(x => x.name === "ftp" && x.disabled !== "true");
+    const api = svcCmd.result.find(x => x.name === "api" && x.disabled !== "true");
+    const www = svcCmd.result.find(x => x.name === "www" && x.disabled !== "true");
+
+    if (telnet) { f.push("PELIGRO: Telnet activo."); s.push("/ip service disable telnet"); }
+    if (ftp) { f.push("PELIGRO: FTP activo."); s.push("/ip service disable ftp"); }
+    if (api && !api.address) { f.push("ADVERTENCIA: API abierto a todos."); s.push("/ip service set api address=IP_DE_TU_SERVIDOR"); }
+    if (www && !www.address) { f.push("ADVERTENCIA: Webfig abierto a todos."); s.push("/ip service set www address=192.168.1.0/24"); }
   }
 
-  // Check address lists
+  // Users
+  const usrCmd = await runCmd("/user/print");
+  c.push(...usrCmd.commands);
+  if (!usrCmd.error) {
+    f.push("");
+    f.push("=== USUARIOS ===");
+    for (const u of usrCmd.result) f.push(`  ${u.name} (grupo: ${u.group})`);
+    const admin = usrCmd.result.find(u => u.name === "admin");
+    if (admin) { f.push("ADVERTENCIA: Usuario 'admin' existe."); s.push("/user add name=tu_usuario group=full password=CONTRASENA_FUERTE"); s.push("/user disable admin"); }
+    if (usrCmd.result.length <= 1) { f.push("ADVERTENCIA: Solo un usuario. Si pierdes acceso, no hay backup."); s.push("Crea un usuario de respaldo."); }
+  }
+
+  // Connection flood
+  const connCmd = await runCmd("/ip/firewall/connection/print", ["=count-only"]);
+  c.push(...connCmd.commands);
+  if (!connCmd.error) {
+    const count = connCmd.result.length;
+    if (count > 5000) { f.push(`ALERTA: ${count} conexiones. Posible DDoS.`); s.push("/ip firewall filter add action=drop chain=forward src-address-list=ddos"); }
+  }
+
+  // Check for address-list based blocks
   const addrCmd = await runCmd("/ip/firewall/address-list/print", ["=count-only"]);
   c.push(...addrCmd.commands);
   if (!addrCmd.error) f.push(`Address lists: ${addrCmd.result.length} entradas`);
 
-  // Build solution based on findings
-  let solution = "";
-
-  if (!firstInput || !(firstInput["connection-state"] || "").includes("established")) {
-    solution += "PROBLEMA #1: Primera regla debe aceptar established/related.\n";
-    solution += "SOLUCION: Mueve la regla established/related al inicio:\n";
-    solution += `  /ip firewall filter move [find connection-state~"established"] 0\n\n`;
+  // SSH key auth check
+  const sshCmd = await runCmd("/ip/ssh/print");
+  c.push(...sshCmd.commands);
+  if (!sshCmd.error && sshCmd.result.length > 0) {
+    const strong = sshCmd.result[0]["strong-crypto"];
+    if (strong === "no") { f.push("ADVERTENCIA: SSH strong-crypto deshabilitado."); s.push("/ip ssh set strong-crypto=yes"); }
   }
 
-  if (dropInvalidIdx === -1) {
-    solution += "PROBLEMA #2: Falta drop invalid.\n";
-    solution += "SOLUCION:\n";
-    solution += "  /ip firewall filter add action=drop chain=input connection-state=invalid place-after=0\n\n";
-  }
-
-  const badIcmp = icmpRules.find(r => r.action === "accept" && !r["limit"]);
-  if (badIcmp) {
-    solution += "PROBLEMA #3: ICMP sin limite.\n";
-    solution += "SOLUCION: Elimina la regla actual y agrega con limite:\n";
-    solution += `  /ip firewall filter remove [find protocol=icmp action=accept]\n`;
-    solution += `  /ip firewall filter add action=accept chain=input protocol=icmp limit=50,5:packet place-before=[find action=drop]\n\n`;
-  }
-
-  for (const r of sshRules) {
-    if (r.action === "accept" && !r["src-address"]) {
-      solution += `PROBLEMA #4: Puerto ${r["dst-port"]} abierto a todos.\n`;
-      solution += "SOLUCION: Restringe a tu IP:\n";
-      solution += `  /ip firewall filter set [find dst-port="${r["dst-port"]}"] src-address=TU_IP_PUBLICA\n\n`;
-    }
-  }
-
-  if (lastInput && lastInput.action !== "drop") {
-    solution += "PROBLEMA #5: Falta drop final en input.\n";
-    solution += "SOLUCION:\n";
-    solution += "  /ip firewall filter add action=drop chain=input comment=\"Drop all input\"\n\n";
-  }
-
-  if (!solution) {
-    solution = "Firewall configurado correctamente. No se detectaron problemas graves.";
-  } else {
-    solution = "=== PROBLEMAS DETECTADOS Y SOLUCIONES ===\n\n" + solution;
-  }
-
-  return {
-    category: "Firewall",
-    findings: f,
-    severity: f.some(x => x.includes("PELIGRO")) ? "critical" : f.some(x => x.includes("PROBLEMA")) ? "critical" : f.some(x => x.includes("ADVERTENCIA")) ? "warning" : "info",
-    commands: c,
-    solution,
-  };
+  if (!s.length) s.push("Seguridad OK.");
+  return { category: "Seguridad", findings: f, severity: sev(f), commands: c, solution: s.join("\n") };
 }
 
-async function diagnosticInterfaces(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const cmd = await runCmd("/interface/print");
-  c.push(...cmd.commands);
-  if (cmd.error) return { category: "Interfaces", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
-  for (const i of cmd.result) {
-    f.push(`${i.name}: ${i.running === "true" ? "UP" : "DOWN"} | RX ${formatBytes(parseInt(i["rx-byte"] || "0"))} TX ${formatBytes(parseInt(i["tx-byte"] || "0"))}`);
-  }
-  return { category: "Interfaces", findings: f, severity: "info", commands: c, solution: "Si hay errores, revisa cableado." };
-}
-
-async function diagnosticCPU(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const cmd = await runCmd("/system/resource/print");
-  c.push(...cmd.commands);
-  if (cmd.error) return { category: "CPU", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
-  const res = cmd.result[0]; const cpu = parseInt(res["cpu-load"] || "0");
-  f.push(`CPU: ${cpu}%`); f.push(`Uptime: ${res.uptime} | v${res.version}`);
-  return { category: "CPU", findings: f, severity: cpu > 90 ? "critical" : cpu > 70 ? "warning" : "info", commands: c, solution: cpu > 70 ? "Ejecuta /tool profile para identificar proceso." : "CPU estable." };
-}
-
-async function diagnosticMemory(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const cmd = await runCmd("/system/resource/print");
-  c.push(...cmd.commands);
-  if (cmd.error) return { category: "Memoria", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
-  const res = cmd.result[0]; const free = parseInt(res["free-memory"] || "0"), total = parseInt(res["total-memory"] || "0");
-  const pct = total > 0 ? ((total - free) / total * 100) : 0;
-  f.push(`RAM: ${formatBytes(free)} libre / ${formatBytes(total)} (${pct.toFixed(0)}%)`);
-  return { category: "Memoria", findings: f, severity: pct > 90 ? "critical" : pct > 80 ? "warning" : "info", commands: c, solution: pct > 80 ? "Deshabilita paquetes innecesarios." : "RAM OK." };
-}
-
-async function diagnosticRoutes(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const cmd = await runCmd("/ip/route/print");
-  c.push(...cmd.commands);
-  if (cmd.error) return { category: "Rutas", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
-  const def = cmd.result.filter(r => r["dst-address"] === "0.0.0.0/0");
-  f.push(`Rutas: ${cmd.result.length} | Default: ${def.length}`);
-  for (const d of def) f.push(`Via ${d.gateway} (${d["active"] === "true" ? "ACTIVA" : "inactiva"})`);
-  return { category: "Rutas", findings: f, severity: def.length === 0 ? "critical" : "info", commands: c, solution: def.length === 0 ? "/ip route add dst-address=0.0.0.0/0 gateway=TU_GATEWAY" : "Rutas OK." };
-}
-
-async function diagnosticNAT(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const cmd = await runCmd("/ip/firewall/nat/print");
-  c.push(...cmd.commands);
-  if (cmd.error) return { category: "NAT", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
-  const masq = cmd.result.filter(r => r.action === "masquerade");
-  f.push(`NAT: ${masq.length} masquerade, ${cmd.result.length} total`);
-  return { category: "NAT", findings: f, severity: cmd.result.length === 0 ? "critical" : "info", commands: c, solution: cmd.result.length === 0 ? "/ip firewall nat add action=masquerade chain=srcnat out-interface=ether1" : "NAT OK." };
-}
-
-async function diagnosticDNS(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const cmd = await runCmd("/ip/dns/print");
-  c.push(...cmd.commands);
-  if (cmd.error) return { category: "DNS", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
-  f.push(`DNS: ${cmd.result[0]?.servers || "No configurado"}`);
-  return { category: "DNS", findings: f, severity: "info", commands: c, solution: "/ip dns set servers=8.8.8.8" };
-}
-
-async function diagnosticDHCP(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const cmd = await runCmd("/ip/dhcp-server/print");
-  c.push(...cmd.commands);
-  if (cmd.error) return { category: "DHCP", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
-  f.push(`DHCP servers: ${cmd.result.length}`);
-  return { category: "DHCP", findings: f, severity: "info", commands: c, solution: "Si falta: /ip dhcp-server setup" };
-}
-
-async function diagnosticQueues(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const cmd = await runCmd("/queue/simple/print");
-  c.push(...cmd.commands);
-  if (cmd.error) return { category: "Queues", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
-  f.push(`Queues: ${cmd.result.length}`);
-  for (const q of cmd.result.slice(0, 5)) f.push(`  ${q.name}: ${q["max-limit"] || "sin limite"}`);
-  return { category: "Queues", findings: f, severity: "info", commands: c, solution: "Para limitar: /queue simple add max-limit=10M/10M name=limite target=192.168.1.0/24" };
-}
-
-async function diagnosticLogs(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const cmd = await runCmd("/log/print", ["=.proplist=time,message,topics", "=limit=15"]);
-  c.push(...cmd.commands);
-  if (cmd.error) return { category: "Logs", findings: [`Error: ${cmd.error}`], severity: "critical", commands: c, solution: "Verifica conexion." };
-  const errs = cmd.result.filter(l => l.topics?.includes("error"));
-  f.push(`Logs: ${cmd.result.length} recientes, ${errs.length} errores`);
-  for (const l of cmd.result.slice(0, 10)) f.push(`[${l.time || ""}] ${l.message || ""}`);
-  return { category: "Logs", findings: f, severity: errs.length > 0 ? "warning" : "info", commands: c, solution: errs.length > 0 ? "Revisa errores." : "Logs limpios." };
-}
-
-async function diagnosticConnectivity(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const cmd = await runCmd("/ping", ["=address=8.8.8.8", "=count=3"]);
-  c.push(...cmd.commands);
-  f.push(cmd.error ? "SIN INTERNET" : "Internet OK");
-  return { category: "Conectividad", findings: f, severity: cmd.error ? "critical" : "info", commands: c, solution: cmd.error ? "Verifica ruta, NAT, firewall." : "Conectividad OK." };
-}
-
-async function diagnosticSecurity(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
-  const svcCmd = await runCmd("/ip/service/print");
-  c.push(...svcCmd.commands);
-  if (!svcCmd.error) {
-    for (const s of svcCmd.result) if (s.disabled !== "true") f.push(`${s.name} puerto ${s.port}: ${s.address || "ABIERTO"}`);
-    if (svcCmd.result.some(s => s.name === "telnet" && s.disabled !== "true")) f.push("PELIGRO: Telnet activo");
-  }
-  const usrCmd = await runCmd("/user/print");
-  c.push(...usrCmd.commands);
-  if (!usrCmd.error) { f.push(`Usuarios: ${usrCmd.result.length}`); if (usrCmd.result.some(u => u.name === "admin")) f.push("ADVERTENCIA: admin existe"); }
-  return { category: "Seguridad", findings: f, severity: f.some(x => x.includes("PELIGRO")) ? "critical" : f.some(x => x.includes("ADVERTENCIA")) ? "warning" : "info", commands: c, solution: "Deshabilita telnet/ftp, crea usuario personalizado." };
-}
-
+// ======================== OVERVIEW ========================
 async function diagnosticOverview(): Promise<DiagnosticResult> {
-  const f: string[] = []; const c: string[] = [];
+  const f: string[] = [], s: string[] = [], c: string[] = [];
+
+  // System
   const resCmd = await runCmd("/system/resource/print");
   c.push(...resCmd.commands);
   if (resCmd.error) return { category: "Estado General", findings: [`ERROR: ${resCmd.error}`], severity: "critical", commands: c, solution: "No se pudo conectar. Verifica /settings." };
+
   const res = resCmd.result[0];
-  f.push(`RouterOS: ${res.version} | CPU: ${res["cpu-load"]}% | RAM: ${formatBytes(parseInt(res["free-memory"]))}/${formatBytes(parseInt(res["total-memory"]))} | Uptime: ${res.uptime}`);
+  const cpu = parseInt(res["cpu-load"] || "0");
+  const free = parseInt(res["free-memory"] || "0"), total = parseInt(res["total-memory"] || "0");
+  const ramPct = total > 0 ? ((total - free) / total * 100) : 0;
+
+  f.push("=== SISTEMA ===");
+  f.push(`RouterOS: ${res.version} | Arquitectura: ${res["architecture-name"] || res.architecture || "?"}`);
+  f.push(`CPU: ${cpu}% | RAM: ${fmt(free)}/${fmt(total)} (${ramPct.toFixed(0)}%) | Uptime: ${res.uptime}`);
+
+  // Identity
   const idCmd = await runCmd("/system/identity/print");
   c.push(...idCmd.commands);
   if (!idCmd.error) f.push(`Nombre: ${idCmd.result[0]?.name || "MikroTik"}`);
+
+  // Interfaces
   const ifCmd = await runCmd("/interface/print");
   c.push(...ifCmd.commands);
-  if (!ifCmd.error) { const up = ifCmd.result.filter(i => i.running === "true"); f.push(`Interfaces: ${up.length}/${ifCmd.result.length} activas`); for (const i of up) f.push(`  ${i.name}: RX ${formatBytes(parseInt(i["rx-byte"]))} TX ${formatBytes(parseInt(i["tx-byte"]))}`); }
+  if (!ifCmd.error) {
+    const up = ifCmd.result.filter(i => i.running === "true");
+    f.push("");
+    f.push("=== INTERFACES ===");
+    f.push(`Activas: ${up.length}/${ifCmd.result.length}`);
+    for (const i of up) f.push(`  ${i.name}: RX ${fmt(parseInt(i["rx-byte"]))} TX ${fmt(parseInt(i["tx-byte"]))}`);
+  }
+
+  // Firewall
   const fwCmd = await runCmd("/ip/firewall/filter/print");
   c.push(...fwCmd.commands);
-  if (!fwCmd.error) f.push(`Firewall: ${fwCmd.result.length} reglas`);
+  if (!fwCmd.error) {
+    f.push("");
+    f.push("=== FIREWALL ===");
+    const input = fwCmd.result.filter(r => (r.chain || "input") === "input");
+    const forward = fwCmd.result.filter(r => r.chain === "forward");
+    f.push(`Reglas: ${fwCmd.result.length} (${input.length} input, ${forward.length} forward)`);
+    const firstOk = input[0] && (input[0]["connection-state"] || "").includes("established");
+    f.push(`Primera regla: ${firstOk ? "OK (established)" : "PROBLEMA (no es established)"}`);
+    if (!firstOk) s.push("/ip firewall filter move [find connection-state~\"established\"] 0");
+  }
+
+  // NAT
   const natCmd = await runCmd("/ip/firewall/nat/print");
   c.push(...natCmd.commands);
-  if (!natCmd.error) f.push(`NAT: ${natCmd.result.length} reglas`);
-  return { category: "Estado General", findings: f, severity: "info", commands: c, solution: "Si algo no se ve bien, dime que verificar." };
+  if (!natCmd.error) {
+    f.push("");
+    f.push("=== NAT ===");
+    f.push(`Reglas: ${natCmd.result.length}`);
+    const masq = natCmd.result.filter(r => r.action === "masquerade");
+    if (masq.length === 0 && natCmd.result.length === 0) { f.push("Sin NAT."); s.push("/ip firewall nat add action=masquerade chain=srcnat out-interface=ether1"); }
+  }
+
+  // Routes
+  const rtCmd = await runCmd("/ip/route/print");
+  c.push(...rtCmd.commands);
+  if (!rtCmd.error) {
+    const def = rtCmd.result.filter(r => r["dst-address"] === "0.0.0.0/0");
+    f.push("");
+    f.push("=== RUTAS ===");
+    f.push(`Total: ${rtCmd.result.length} | Default: ${def.length}`);
+    for (const d of def) f.push(`  Via ${d.gateway} (${d["active"] === "true" ? "ACTIVA" : "INACTIVA"})`);
+    if (def.length === 0) s.push("/ip route add dst-address=0.0.0.0/0 gateway=IP_GATEWAY");
+  }
+
+  // Services
+  const svcCmd = await runCmd("/ip/service/print");
+  c.push(...svcCmd.commands);
+  if (!svcCmd.error) {
+    const open = svcCmd.result.filter(s => s.disabled !== "true");
+    f.push("");
+    f.push("=== SERVICIOS ACTIVOS ===");
+    for (const svc of open) f.push(`  ${svc.name} puerto ${svc.port}: ${svc.address || "ABIERTO"}`);
+  }
+
+  // Issues summary
+  f.push("");
+  f.push("=== RESUMEN ===");
+  if (cpu > 80) { f.push("CPU alta."); s.push("/tool profile duration=15"); }
+  if (ramPct > 80) { f.push("RAM alta."); s.push("/system package print"); }
+
+  if (!s.length) s.push("Todo OK. No se detectaron problemas.");
+  return { category: "Estado General", findings: f, severity: sev(f), commands: c, solution: s.join("\n") };
 }
