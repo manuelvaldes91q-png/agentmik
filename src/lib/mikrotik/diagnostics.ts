@@ -157,33 +157,111 @@ async function diagnosticCPU(): Promise<DiagnosticResult> {
   const cpu = parseInt(res["cpu-load"] || "0");
   f.push(`CPU: ${cpu}% | Uptime: ${res.uptime} | RouterOS: ${res.version}`);
 
-  if (cpu > 90) {
-    f.push("CRITICO: CPU > 90%. El router puede dejar de responder.");
-    s.push("PASO 1: Identifica el proceso: /tool profile duration=15");
-    s.push("PASO 2: Si es firewall, reordena reglas (established primero)");
-    s.push("PASO 3: Si es routing, reduce prefijos BGP: /routing bgp peer set [find] prefix-limit=100000");
-    s.push("PASO 4: Si es networking, revisa conexiones: /ip firewall connection print count-only");
-  } else if (cpu > 70) {
-    f.push("ADVERTENCIA: CPU > 70%.");
-    s.push("Ejecuta /tool profile duration=15 para ver que proceso consume CPU.");
-    s.push("Revisa si hay muchas conexiones: /ip firewall connection print count-only");
-  } else if (cpu > 40) {
-    f.push("CPU moderada. Normal para la mayoria de configuraciones.");
+  if (cpu > 50) {
+    f.push("");
+    f.push("=== EJECUTANDO /tool/profile (15 segundos)... ===");
+
+    // Actually run tool profile
+    const profCmd = await runCmd("/tool/profile", ["=duration=15"]);
+    c.push(...profCmd.commands);
+
+    if (!profCmd.error && profCmd.result.length > 0) {
+      f.push("Procesos que consumen CPU:");
+      // Sort by CPU usage
+      const sorted = profCmd.result
+        .filter(p => p.name && p["cpu-usage"])
+        .sort((a, b) => parseInt(b["cpu-usage"] || "0") - parseInt(a["cpu-usage"] || "0"));
+
+      for (const p of sorted) {
+        const usage = parseInt(p["cpu-usage"] || "0");
+        const name = p.name;
+        f.push(`  ${name}: ${usage}%`);
+
+        // Provide specific solution based on process
+        if (name === "firewall" && usage > 30) {
+          f.push("    -> Firewall consume mucho CPU.");
+          s.push("CAUSA: Reglas mal ordenadas o demasiadas reglas.");
+          s.push("SOLUCION firewall:");
+          s.push("  1. Mueve established/related al inicio: /ip firewall filter move [find connection-state~\"established\"] 0");
+          s.push("  2. Mueve drop invalid despues: /ip firewall filter move [find connection-state~\"invalid\"] 1");
+          s.push("  3. Usa address-lists en lugar de reglas individuales");
+          s.push("  4. Habilita FastTrack: /ip firewall filter add action=fasttrack-connection chain=forward connection-state=established,related");
+        }
+        if (name === "networking" && usage > 30) {
+          f.push("    -> Networking consume mucho CPU. Posible DDoS o flood.");
+          s.push("CAUSA: Muchas conexiones o paquetes por segundo.");
+          s.push("SOLUCION networking:");
+          s.push("  1. Revisa conexiones: /ip firewall connection print count-only");
+          s.push("  2. Si > 10000, hay ataque. Bloquea: /ip firewall filter add action=drop chain=forward src-address-list=ddos");
+          s.push("  3. Limita SYN: /ip firewall filter add action=drop chain=forward protocol=tcp connection-state=new connection-limit=100/30s");
+        }
+        if (name === "routing" && usage > 20) {
+          f.push("    -> Routing consume mucho CPU. Posible BGP full table.");
+          s.push("CAUSA: BGP recibiendo muchos prefijos o OSPF reconvergiendo.");
+          s.push("SOLUCION routing:");
+          s.push("  1. Revisa BGP: /routing bgp peer print stats");
+          s.push("  2. Limita prefijos: /routing bgp peer set [find] prefix-limit=100000");
+          s.push("  3. Si no necesitas full route, filtra: /routing filter add chain=bgp-in rule=\"if (dst-len > 24) { reject }\"");
+        }
+        if (name === "management" && usage > 20) {
+          f.push("    -> Management consume CPU. Winbox/API abierto a internet.");
+          s.push("CAUSA: Escaneo de puertos o acceso masivo a API/Winbox.");
+          s.push("SOLUCION management:");
+          s.push("  1. Restringe API: /ip service set api address=IP_DE_TU_SERVIDOR");
+          s.push("  2. Restringe Winbox: /ip service set winbox address=192.168.1.0/24");
+        }
+        if (name === "crypto" && usage > 20) {
+          f.push("    -> Crypto consume CPU. Muchas conexiones VPN o IPsec.");
+          s.push("CAUSA: VPN/IPsec procesando mucho trafico cifrado.");
+          s.push("SOLUCION crypto:");
+          s.push("  1. Usa hardware con soporte de cifrado por hardware");
+          s.push("  2. Reduce tuneles VPN activos");
+        }
+        if (name === "queuing" && usage > 20) {
+          f.push("    -> Queuing consume CPU. Demasiadas queues simples.");
+          s.push("CAUSA: Muchas queues simples procesando cada paquete.");
+          s.push("SOLUCION queuing:");
+          s.push("  1. Usa PCQ en lugar de queues individuales");
+          s.push("  2. Reduce queues simples: /queue simple remove [find target~\"192.168\"]");
+          s.push("  3. Agrega PCQ: /queue type add name=pcq-down kind=pcq pcq-classifier=dst-address pcq-rate=5M");
+        }
+      }
+
+      if (sorted.length === 0) {
+        f.push("No se pudieron identificar procesos. Ejecuta manualmente: /tool profile duration=15");
+      }
+    } else {
+      f.push(`No se pudo ejecutar /tool/profile: ${profCmd.error || "error desconocido"}`);
+      s.push("Ejecuta manualmente: /tool profile duration=15 y dime los resultados.");
+    }
+
+    // Also check connection count
+    const connCmd = await runCmd("/ip/firewall/connection/print", ["=count-only"]);
+    c.push(...connCmd.commands);
+    if (!connCmd.error) {
+      const count = connCmd.result.length;
+      f.push(`Conexiones activas: ${count}`);
+      if (count > 10000) { f.push("ALERTA: Demasiadas conexiones. Posible ataque."); s.push("/ip firewall filter add action=drop chain=forward src-address-list=ddos-flood"); }
+    }
+
+    // Check firewall rule count
+    const fwCmd = await runCmd("/ip/firewall/filter/print", ["=count-only"]);
+    c.push(...fwCmd.commands);
+    if (!fwCmd.error) {
+      const fwCount = fwCmd.result.length;
+      f.push(`Reglas firewall: ${fwCount}`);
+      if (fwCount > 100) s.push("Demasiadas reglas. Usa address-lists y jump rules para agrupar.");
+    }
+
+  } else if (cpu > 30) {
+    f.push("CPU moderada. Normal para la mayoria de operaciones.");
     s.push("CPU estable. No se requiere accion.");
   } else {
     f.push("CPU baja. Router con recursos disponibles.");
     s.push("CPU optima.");
   }
 
-  // Firewall stats impact
-  const fwCmd = await runCmd("/ip/firewall/filter/print", ["=count-only"]);
-  c.push(...fwCmd.commands);
-  if (!fwCmd.error && fwCmd.result.length > 0) {
-    const count = fwCmd.result.length;
-    f.push(`Reglas firewall: ${count}`);
-    if (count > 100) { f.push("ADVERTENCIA: Muchas reglas firewall. Cada paquete pasa por todas."); s.push("Usa address-lists y jump rules para reducir procesamiento."); }
-  }
-
+  if (!s.length) s.push("No se detectaron problemas de CPU.");
   return { category: "CPU", findings: f, severity: cpu > 90 ? "critical" : cpu > 70 ? "warning" : "info", commands: c, solution: s.join("\n") };
 }
 
