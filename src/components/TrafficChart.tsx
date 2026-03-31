@@ -6,8 +6,9 @@ interface TrafficPoint { time: number; rx: number; tx: number; }
 
 function formatRate(bps: number): string {
   if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
-  if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)} Kbps`;
-  return `${bps} bps`;
+  if (bps >= 1_000) return `${(bps / 1_000).toFixed(1)} kbps`;
+  if (bps >= 1) return `${bps.toFixed(0)} bps`;
+  return `0 bps`;
 }
 
 export function TrafficChart({ label, rxRate, txRate, isReal }: { label: string; rxRate?: number; txRate?: number; isReal?: boolean }) {

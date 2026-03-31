@@ -424,11 +424,10 @@ export default function DashboardPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {data.interfaces
                 .filter((i) => i.status === "up")
-                .slice(0, 4)
                 .map((iface) => (
                   <TrafficChart
                     key={iface.name}
-                    label={`${iface.name}${iface.comment ? ` (${iface.comment})` : ""}`}
+                    label={iface.name}
                     rxRate={iface.rxRate}
                     txRate={iface.txRate}
                     isReal={isRealData}

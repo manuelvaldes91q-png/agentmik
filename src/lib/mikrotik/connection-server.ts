@@ -237,9 +237,10 @@ export async function fetchRealRouterData(): Promise<{
   }
 }
 
-// Format bits per second like Winbox does: "12.5 Mbps", "1.2 kbps", "500 bps"
+// Format bits per second like Winbox does: "4.7 Mbps", "68.6 kbps", "0 bps"
 function formatBps(bps: number): string {
   if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
-  if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)} Kbps`;
-  return `${bps} bps`;
+  if (bps >= 1_000) return `${(bps / 1_000).toFixed(1)} kbps`;
+  if (bps >= 1) return `${bps.toFixed(0)} bps`;
+  return `0 bps`;
 }
